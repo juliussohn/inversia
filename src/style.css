@@ -59,7 +59,7 @@ html, body {
 
 /* ---- Panel ---- */
 #panel {
-  position: fixed; right: 22px; top: 22px; z-index: 10;
+  position: fixed; right: 22px; top: 76px; z-index: 10;
   width: 312px; max-width: calc(100vw - 44px);
   padding: 18px 18px 14px;
   background: var(--panel);
@@ -140,6 +140,30 @@ input[type="range"]::-moz-range-thumb {
 .about em { color: var(--accent); font-style: normal; }
 .about .src { font-size: 11px; opacity: 0.8; }
 .about code { background: rgba(255, 255, 255, 0.07); padding: 1px 5px; border-radius: 4px; font-size: 11px; }
+
+/* ---- UI hide/show toggle ---- */
+#ui-toggle {
+  position: fixed; top: 18px; right: 18px; z-index: 30;
+  width: 44px; height: 44px; display: grid; place-items: center;
+  padding: 0; cursor: pointer; color: var(--text);
+  background: var(--panel); border: 1px solid var(--panel-border);
+  border-radius: 50%; backdrop-filter: blur(12px);
+  -webkit-backdrop-filter: blur(12px);
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.4);
+  transition: background 0.15s ease, transform 0.08s ease;
+}
+#ui-toggle:hover { background: rgba(255, 255, 255, 0.12); }
+#ui-toggle:active { transform: scale(0.94); }
+#ui-toggle svg { width: 22px; height: 22px; display: block; }
+#ui-toggle .i-show { display: none; }
+body.ui-hidden #ui-toggle .i-hide { display: none; }
+body.ui-hidden #ui-toggle .i-show { display: inline; }
+
+/* Collapse the rest of the HUD when hidden */
+#brand, #panel, #legend { transition: opacity 0.28s ease, transform 0.28s ease; }
+body.ui-hidden #brand { opacity: 0; transform: translateY(-8px); pointer-events: none; }
+body.ui-hidden #panel { opacity: 0; transform: translateY(12px); pointer-events: none; }
+body.ui-hidden #legend { opacity: 0; pointer-events: none; }
 
 /* ---- Legend ---- */
 #legend {
