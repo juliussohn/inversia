@@ -1,0 +1,19 @@
+{
+  "name": "inversia",
+  "version": "1.0.0",
+  "description": "Inversia - an interactive inverted-Earth globe where oceans become land and land becomes ocean, with an adjustable sea level.",
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "vite build",
+    "preview": "vite preview",
+    "bake": "python3 scripts/bake_heightmap.py"
+  },
+  "license": "MIT",
+  "dependencies": {
+    "three": "^0.160.0"
+  },
+  "devDependencies": {
+    "vite": "^5.4.10"
+  }
+}

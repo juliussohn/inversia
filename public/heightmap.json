@@ -1,0 +1,7 @@
+{
+  "minElev": -8182.0,
+  "maxElev": 5652.0,
+  "width": 2048,
+  "height": 1024,
+  "source": "GMT earth_relief_01d (NOAA/GEBCO, public domain)"
+}
