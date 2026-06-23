@@ -324,13 +324,44 @@ async function main() {
   // ---- UI wiring --------------------------------------------------------
   bindUI({ uniforms, controls, landFraction });
 
+  // ---- HUD framing + hide/show ------------------------------------------
+  // On narrow screens the controls dock to the bottom and would overlap the
+  // globe, so shift the rendered globe up by half the panel height using a
+  // camera view-offset (a pure screen-space shift — the globe still spins in
+  // place with no distortion). When the HUD is hidden, the globe re-centres.
+  const panelEl = $("panel");
+  let uiVisible = true;
+
+  function applyFraming() {
+    const W = window.innerWidth;
+    const H = window.innerHeight;
+    const mobile = W <= 720;
+    let dy = 0;
+    if (mobile && uiVisible) {
+      const rect = panelEl.getBoundingClientRect();
+      dy = (rect.height + 12) * 0.5; // lift so the globe centres above the panel
+    }
+    if (dy > 0) camera.setViewOffset(W, H, 0, dy, W, H);
+    else camera.clearViewOffset();
+  }
+
+  const uiToggle = $("ui-toggle");
+  uiToggle.addEventListener("click", () => {
+    uiVisible = !uiVisible;
+    document.body.classList.toggle("ui-hidden", !uiVisible);
+    uiToggle.title = uiVisible ? "Hide controls" : "Show controls";
+    applyFraming();
+  });
+
   // ---- resize -----------------------------------------------------------
   function onResize() {
     camera.aspect = window.innerWidth / window.innerHeight;
     camera.updateProjectionMatrix();
     renderer.setSize(window.innerWidth, window.innerHeight);
+    applyFraming();
   }
   window.addEventListener("resize", onResize);
+  applyFraming();
 
   // ---- render loop ------------------------------------------------------
   const clock = new THREE.Clock();
