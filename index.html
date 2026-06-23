@@ -1,0 +1,84 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
+    <title>Inversia — the inside-out Earth</title>
+    <meta name="description" content="An interactive globe of Inversia: invert Earth's elevation so the oceans become land and the continents become sea, then move the water level up and down." />
+    <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><circle cx='50' cy='50' r='46' fill='%230d2350'/><circle cx='50' cy='50' r='46' fill='none' stroke='%234e7a3e' stroke-width='8' stroke-dasharray='40 18 24 30'/></svg>" />
+  </head>
+  <body>
+    <div id="app"></div>
+
+    <!-- Loading / error overlay -->
+    <div id="loader">
+      <div class="loader-inner">
+        <div class="spinner"></div>
+        <p id="loader-text">Building Inversia…</p>
+      </div>
+    </div>
+
+    <!-- HUD -->
+    <header id="brand">
+      <h1>INVERSIA</h1>
+      <p>The inside-out Earth — oceans become land, land becomes ocean.</p>
+    </header>
+
+    <section id="panel" aria-label="Controls">
+      <div class="row mode-row">
+        <button id="mode-toggle" class="mode-btn" type="button">
+          <span class="mode-label">World:</span>
+          <span id="mode-value">Inversia</span>
+        </button>
+      </div>
+
+      <div class="control">
+        <div class="control-head">
+          <label for="sea">Water level</label>
+          <span id="sea-value" class="value">0 m</span>
+        </div>
+        <input id="sea" type="range" min="-8000" max="6000" step="25" value="0" />
+        <div class="ticks"><span>deep</span><span>sea level</span><span>high</span></div>
+      </div>
+
+      <div class="control">
+        <div class="control-head">
+          <label for="exag">Relief exaggeration</label>
+          <span id="exag-value" class="value">×25</span>
+        </div>
+        <input id="exag" type="range" min="0" max="60" step="1" value="25" />
+      </div>
+
+      <div id="stats" class="stats">
+        <div><span class="dot land"></span><span id="land-pct">—</span> land</div>
+        <div><span class="dot sea"></span><span id="sea-pct">—</span> ocean</div>
+      </div>
+
+      <div class="row buttons">
+        <button id="spin-toggle" class="ghost" type="button">⟳ Auto-spin: on</button>
+        <button id="reset-view" class="ghost" type="button">Reset view</button>
+      </div>
+
+      <details class="about">
+        <summary>What is this?</summary>
+        <p>
+          Every point on Earth has an elevation — mountains rise thousands of
+          metres above the sea, and the ocean floor drops just as far below it.
+          <strong>Inversia</strong> flips that height field upside-down: the deep
+          ocean basins become towering new continents, and today's land sinks
+          into a new world ocean. Drag the <em>water level</em> to flood or drain
+          the planet, and toggle between the real Earth and its inverse.
+        </p>
+        <p class="src">Elevation: GMT <code>earth_relief</code> (NOAA / GEBCO, public domain).</p>
+      </details>
+    </section>
+
+    <div id="legend" aria-hidden="true">
+      <strong style="color:#cfe0f5">Elevation</strong>
+      <div class="legend-bar"></div>
+      <div class="legend-row"><span>ocean trench</span><span>water</span><span>peaks</span></div>
+    </div>
+
+    <script type="module" src="/src/main.js"></script>
+  </body>
+</html>
