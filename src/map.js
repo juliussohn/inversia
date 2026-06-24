@@ -157,6 +157,11 @@ const params = { invert: 1, sea: 0, relief: 1.0 };
 const view = { wx: 0.5, wy: 0.5, zoom: 1.4 };
 let W = 0, H = 0, dpr = 1;
 let frameId = 0;
+let lastT = 0;
+
+// Smooth, momentum-style zoom: wheel/buttons nudge a target the view eases to.
+let zoomTarget = view.zoom;     // where we're gliding toward
+let zoomAnchor = null;          // screen px the zoom pivots around (cursor)
 
 // ---- tile cache + loader ------------------------------------------------
 const cache = new Map(); // key -> { tex, lastUsed }
@@ -229,8 +234,28 @@ function drawTile(sx, sy, size, t) {
 
 let firstPaint = false;
 
-function frame() {
+// Ease the live zoom toward its target each frame (frame-rate independent),
+// keeping the anchor point fixed under the cursor — this is what gives the
+// glide/momentum feel after the trackpad stops moving.
+function easeZoom(dt) {
+  if (zoomAnchor === null) return;
+  const diff = zoomTarget - view.zoom;
+  if (Math.abs(diff) < 0.0006) {
+    if (view.zoom !== zoomTarget) zoomAround(zoomAnchor.x, zoomAnchor.y, zoomTarget);
+    zoomAnchor = null;
+    return;
+  }
+  const k = 1 - Math.exp(-dt * 13); // higher = snappier, lower = floatier
+  zoomAround(zoomAnchor.x, zoomAnchor.y, view.zoom + diff * k);
+}
+
+function frame(now) {
   frameId++;
+  const dt = lastT ? Math.min((now - lastT) / 1000, 0.05) : 0.016;
+  lastT = now;
+  stepFly(dt);
+  easeZoom(dt);
+
   gl.viewport(0, 0, canvas.width, canvas.height);
   gl.clearColor(0.02, 0.03, 0.05, 1);
   gl.clear(gl.COLOR_BUFFER_BIT);
@@ -290,7 +315,22 @@ function frame() {
     firstPaint = true;
     $("loader").classList.add("hidden");
   }
+
+  updateMeDot(worldPx);
   requestAnimationFrame(frame);
+}
+
+const meDotEl = $("me-dot");
+function updateMeDot(worldPx) {
+  if (!meMarker) return;
+  // account for the world wrapping horizontally; pick the nearest copy
+  let dx = meMarker.wx - view.wx;
+  dx = ((dx % 1) + 1.5) % 1 - 0.5;
+  const sx = dx * worldPx + W / 2;
+  const sy = (meMarker.wy - view.wy) * worldPx + H / 2;
+  const onScreen = sx >= -20 && sx <= W + 20 && sy >= -20 && sy <= H + 20;
+  meDotEl.classList.toggle("show", onScreen);
+  if (onScreen) meDotEl.style.transform = `translate(${sx}px, ${sy}px)`;
 }
 
 // ---- interaction --------------------------------------------------------
@@ -339,7 +379,11 @@ canvas.addEventListener("pointermove", (e) => {
     const dist = Math.hypot(pts[0].x - pts[1].x, pts[0].y - pts[1].y);
     const mid = { x: (pts[0].x + pts[1].x) / 2, y: (pts[0].y + pts[1].y) / 2 };
     if (pinchPrev) {
-      if (pinchPrev.dist > 0) zoomAround(mid.x, mid.y, view.zoom + Math.log2(dist / pinchPrev.dist));
+      if (pinchPrev.dist > 0) {
+        zoomAround(mid.x, mid.y, view.zoom + Math.log2(dist / pinchPrev.dist));
+        zoomTarget = view.zoom; // direct manipulation wins; keep target in sync
+        zoomAnchor = null;
+      }
       const worldPx = TILE * Math.pow(2, view.zoom);
       view.wx -= (mid.x - pinchPrev.x) / worldPx;
       view.wy -= (mid.y - pinchPrev.y) / worldPx;
@@ -356,7 +400,14 @@ canvas.addEventListener("pointerup", endPointer);
 canvas.addEventListener("pointercancel", endPointer);
 canvas.addEventListener("wheel", (e) => {
   e.preventDefault();
-  zoomAround(e.clientX, e.clientY, view.zoom - e.deltaY * 0.0016);
+  // Normalise across devices: trackpads report pixels, mice report lines/pages.
+  let d = e.deltaY;
+  if (e.deltaMode === 1) d *= 16;      // lines → px
+  else if (e.deltaMode === 2) d *= H;  // pages → px
+  // Pinch-zoom gestures arrive as ctrl+wheel with small deltas — zoom faster.
+  const factor = e.ctrlKey ? 0.012 : 0.0022;
+  zoomTarget = clamp(zoomTarget - d * factor, MIN_ZOOM, MAX_ZOOM);
+  zoomAnchor = { x: e.clientX, y: e.clientY };
 }, { passive: false });
 
 // ---- UI -----------------------------------------------------------------
@@ -404,16 +455,79 @@ function bindUI() {
     const hidden = document.body.classList.toggle("ui-hidden");
     uiToggle.title = hidden ? "Show controls" : "Hide controls";
   });
-  $("zoom-in").addEventListener("click", () => zoomAround(W / 2, H / 2, view.zoom + 1));
-  $("zoom-out").addEventListener("click", () => zoomAround(W / 2, H / 2, view.zoom - 1));
+  const nudgeZoom = (delta) => {
+    zoomTarget = clamp(zoomTarget + delta, MIN_ZOOM, MAX_ZOOM);
+    zoomAnchor = { x: W / 2, y: H / 2 };
+  };
+  $("zoom-in").addEventListener("click", () => nudgeZoom(1));
+  $("zoom-out").addEventListener("click", () => nudgeZoom(-1));
   $("reset-view").addEventListener("click", () => {
     view.wx = 0.5;
     view.wy = 0.5;
     view.zoom = Math.max(MIN_ZOOM, Math.log2(Math.min(W, H) / TILE) - 0.05);
+    zoomTarget = view.zoom;
+    zoomAnchor = null;
     clampView();
     updateReadout();
   });
+  bindLocate();
   setMode();
+}
+
+// ---- fly-to (smooth glide to a world point + zoom) ----------------------
+let flying = null; // { sx, sy, sz, tx, ty, tz, t } animation state
+function flyTo(wx, wy, zoom) {
+  zoomAnchor = null; // hand control to the fly animation
+  // shortest path across the antimeridian seam
+  let tx = ((wx % 1) + 1) % 1;
+  const sx = view.wx;
+  if (tx - sx > 0.5) tx -= 1;
+  else if (sx - tx > 0.5) tx += 1;
+  flying = { sx, sy: view.wy, sz: view.zoom, tx, ty: wy, tz: clamp(zoom, MIN_ZOOM, MAX_ZOOM), t: 0 };
+}
+function stepFly(dt) {
+  if (!flying) return;
+  flying.t = Math.min(1, flying.t + dt / 0.9); // ~0.9s glide
+  const e = flying.t < 0.5 ? 4 * flying.t ** 3 : 1 - Math.pow(-2 * flying.t + 2, 3) / 2; // easeInOutCubic
+  view.wx = flying.sx + (flying.tx - flying.sx) * e;
+  view.wy = flying.sy + (flying.ty - flying.sy) * e;
+  view.zoom = flying.sz + (flying.tz - flying.sz) * e;
+  clampView();
+  updateReadout();
+  if (flying.t >= 1) {
+    zoomTarget = view.zoom;
+    flying = null;
+  }
+}
+
+// ---- geolocation ("go to my location") ----------------------------------
+let meMarker = null; // { wx, wy } in world coords, drawn as a dot
+function bindLocate() {
+  const btn = $("locate");
+  if (!btn) return;
+  btn.addEventListener("click", () => {
+    if (!navigator.geolocation) {
+      btn.classList.add("error");
+      btn.title = "Geolocation not supported";
+      return;
+    }
+    btn.classList.add("busy");
+    navigator.geolocation.getCurrentPosition(
+      (pos) => {
+        btn.classList.remove("busy");
+        btn.classList.add("active");
+        const wx = lonToWX(pos.coords.longitude);
+        const wy = latToWY(pos.coords.latitude);
+        meMarker = { wx, wy };
+        flyTo(wx, wy, Math.min(MAX_ZOOM, 12));
+      },
+      () => {
+        btn.classList.remove("busy");
+        btn.title = "Couldn't get your location";
+      },
+      { enableHighAccuracy: true, timeout: 10000, maximumAge: 30000 },
+    );
+  });
 }
 
 // ---- global land/ocean stat (decoded from the z0 world tile) ------------

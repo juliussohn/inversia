@@ -9,6 +9,7 @@
   </head>
   <body class="map-mode">
     <canvas id="map"></canvas>
+    <div id="me-dot" aria-hidden="true"></div>
 
     <div id="loader">
       <div class="loader-inner">
@@ -27,6 +28,9 @@
     </button>
 
     <div id="zoom-controls">
+      <button id="locate" type="button" aria-label="Go to my location" title="My location">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3.2"/><path d="M12 2v3.2M12 18.8V22M2 12h3.2M18.8 12H22"/></svg>
+      </button>
       <button id="zoom-in" type="button" aria-label="Zoom in">+</button>
       <button id="zoom-out" type="button" aria-label="Zoom out">−</button>
     </div>
