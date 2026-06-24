@@ -43,3 +43,10 @@ body {
   font-size: 18px;
   letter-spacing: 0.12em;
 }
+
+#stats {
+  display: block;
+  margin-top: 2px;
+  font-variant-numeric: tabular-nums;
+  opacity: 0.85;
+}

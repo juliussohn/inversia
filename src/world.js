@@ -14,6 +14,8 @@ import "./world.css";
 
 import { decodeHash, encodeHash } from "./world/recipe.js";
 import { createPanel } from "./world/panel.js";
+import { createTerrainLayer } from "./world/terrain-layer.js";
+import { loadWorldStat, landFraction } from "./terrain.js";
 
 // ---- recipe (single source of truth) ------------------------------------
 // Seed it straight from the URL hash so a shared link restores the same world.
@@ -49,14 +51,26 @@ const map = new maplibregl.Map({
   style: baseStyle(),
   center: [0, 20],
   zoom: 2,
+  // Phase 2 is mercator-only; rotation/pitch would break the terrain layer's
+  // visible-bounds math (and globe is Phase 3), so lock the camera flat.
+  dragRotate: false,
+  pitchWithRotate: false,
+  maxPitch: 0,
   attributionControl: false,
 });
-map.addControl(new maplibregl.NavigationControl({ visualizePitch: false }), "bottom-right");
+map.touchZoomRotate.disableRotation();
+map.addControl(new maplibregl.NavigationControl({ visualizePitch: false, showCompass: false }), "bottom-right");
 map.addControl(new maplibregl.AttributionControl({ compact: true }), "bottom-left");
 
+// The live inverted terrain renderer. It reads invert/water/relief straight off
+// the recipe each frame, so panel edits show instantly — we only nudge a repaint.
+const terrain = createTerrainLayer(recipe);
+
 function applyRecipeToMap() {
-  if (!map.getLayer("bg")) return;
-  map.setPaintProperty("bg", "background-color", backgroundFor(recipe));
+  if (map.getLayer("bg")) map.setPaintProperty("bg", "background-color", backgroundFor(recipe));
+  // terrain reads the recipe live; just ask MapLibre to repaint with the new uniforms
+  if (map.getLayer(terrain.id)) map.triggerRepaint();
+  scheduleStats();
 }
 
 // ---- recipe → URL hash ---------------------------------------------------
@@ -76,8 +90,28 @@ createPanel({
   },
 });
 
+// ---- land / ocean readout ------------------------------------------------
+// Cheap global statistic from the decoded z0 world tile. Recomputed on settle
+// (debounced) rather than per-drag frame so dragging the water slider stays
+// shader-only and instant, matching the legacy app.
+const statsEl = document.getElementById("stats");
+let statsTimer = 0;
+function refreshStats() {
+  const lf = landFraction(recipe.world.invert ? 1 : 0, recipe.world.water);
+  if (lf == null || !statsEl) return;
+  statsEl.textContent = `land ${(lf * 100).toFixed(1)}% · ocean ${((1 - lf) * 100).toFixed(1)}%`;
+}
+function scheduleStats() {
+  clearTimeout(statsTimer);
+  statsTimer = setTimeout(refreshStats, 120);
+}
+
 // ---- go ------------------------------------------------------------------
-map.on("load", applyRecipeToMap);
+map.on("load", () => {
+  applyRecipeToMap();
+  map.addLayer(terrain); // above the placeholder background
+});
+loadWorldStat().then(refreshStats);
 syncHash();
 
 // expose for quick console poking during development

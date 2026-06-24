@@ -110,7 +110,11 @@ export function linkProgram(gl, vertSrc, fragSrc) {
 // One instance per GL context. Reserves a slot before fetching to avoid
 // duplicate requests, evicts least-recently-used textures past the limit, and
 // can fall back to an already-loaded ancestor tile while a child streams in.
-export function createTileCache(gl) {
+//
+// `onLoad` (optional) fires after a tile's texture is ready. The slippy map
+// drives its own rAF loop and ignores it, but MapLibre's custom layer only
+// repaints on demand, so it uses this to `triggerRepaint()` as tiles stream in.
+export function createTileCache(gl, onLoad) {
   const cache = new Map(); // key -> { tex, lastUsed }
   let inflight = 0;
   let frameId = 0;
@@ -141,7 +145,7 @@ export function createTileCache(gl) {
       inflight++;
       const img = new Image();
       img.crossOrigin = "anonymous";
-      img.onload = () => { inflight--; const e = cache.get(key); if (e) e.tex = texFromImage(img); };
+      img.onload = () => { inflight--; const e = cache.get(key); if (e) { e.tex = texFromImage(img); onLoad?.(); } };
       img.onerror = () => { inflight--; cache.delete(key); }; // allow retry
       img.src = TILE_URL(z, x, y);
     },
