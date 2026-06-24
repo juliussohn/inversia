@@ -1,6 +1,7 @@
 import "./style.css";
 import * as THREE from "three";
 import { OrbitControls } from "three/addons/controls/OrbitControls.js";
+import { readHash, buildHash, navigateWithFade } from "./handoff.js";
 
 /* ------------------------------------------------------------------ *
  *  Inversia — interactive inverted-Earth globe
@@ -323,6 +324,59 @@ async function main() {
 
   // ---- UI wiring --------------------------------------------------------
   bindUI({ uniforms, controls, landFraction });
+
+  // ---- cross-view handoff (globe ⟷ zoomable map) ------------------------
+  // The sub-camera point on the unit sphere is the geographic point you're
+  // looking at; undo the globe's spin to read it in the texture's frame.
+  const Y_AXIS = new THREE.Vector3(0, 1, 0);
+  function dirFromLatLon(lat, lon) {
+    const la = (lat * Math.PI) / 180;
+    const phi = ((lon + 180) * Math.PI) / 180;
+    const cl = Math.cos(la);
+    return new THREE.Vector3(-Math.cos(phi) * cl, Math.sin(la), Math.sin(phi) * cl);
+  }
+  function cameraLatLon() {
+    const w = camera.position.clone().normalize().applyAxisAngle(Y_AXIS, -globe.rotation.y);
+    const lat = (Math.asin(THREE.MathUtils.clamp(w.y, -1, 1)) * 180) / Math.PI;
+    let lon = (Math.atan2(w.z, -w.x) * 180) / Math.PI - 180;
+    lon = ((((lon + 180) % 360) + 360) % 360) - 180;
+    return { lat, lon };
+  }
+
+  // Restore state handed in from the map (or a shared link): match the world,
+  // then orient the globe so that point faces the camera and stop the spin.
+  {
+    const s = readHash();
+    if (s.sea != null) {
+      const seaEl = $("sea");
+      seaEl.value = Math.max(+seaEl.min, Math.min(+seaEl.max, s.sea));
+      seaEl.dispatchEvent(new Event("input"));
+    }
+    if (s.invert != null && s.invert !== state.invert) $("mode-toggle").click();
+    if (s.lat != null && s.lon != null) {
+      state.autoSpin = false;
+      $("spin-toggle").textContent = "⟳ Auto-spin: off";
+      globe.rotation.y = 0;
+      camera.position.copy(dirFromLatLon(s.lat, s.lon).multiplyScalar(2.0));
+      controls.update();
+    }
+  }
+
+  // Pushing zoom past the closest distance dives into the streaming map.
+  let divingToMap = false;
+  function diveToMap() {
+    if (divingToMap) return;
+    divingToMap = true;
+    const { lat, lon } = cameraLatLon();
+    navigateWithFade("index.html" + buildHash({
+      lat, lon, zoom: 6, invert: state.invert, sea: state.seaLevel,
+    }));
+  }
+  renderer.domElement.addEventListener("wheel", (e) => {
+    if (e.deltaY < 0 && controls.getDistance() <= controls.minDistance * 1.06) diveToMap();
+  }, { passive: true });
+  const mapLink = $("map-link");
+  if (mapLink) mapLink.addEventListener("click", (e) => { e.preventDefault(); diveToMap(); });
 
   // ---- HUD framing + hide/show ------------------------------------------
   // On narrow screens the controls dock to the bottom and would overlap the

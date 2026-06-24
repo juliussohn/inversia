@@ -10,7 +10,7 @@ import { defineConfig } from "vite";
 // after the next deploy.
 export default defineConfig(({ command }) => ({
   base: command === "build" ? "/inversia/" : "/",
-  server: { host: true, port: 5173 },
+  server: { host: true, port: process.env.PORT ? +process.env.PORT : 5173 },
   build: {
     rollupOptions: {
       input: {
@@ -20,7 +20,13 @@ export default defineConfig(({ command }) => ({
       output: {
         entryFileNames: "assets/[name].js",
         chunkFileNames: "assets/[name].js",
-        assetFileNames: "assets/[name][extname]",
+        // Pin the bundled CSS to a fixed name. Its chunk attribution can shift
+        // as modules are added (e.g. a shared handoff module), but a cached
+        // HTML must keep pointing at a file that still exists after deploy.
+        assetFileNames: (info) =>
+          (info.name || "").endsWith(".css")
+            ? "assets/style.css"
+            : "assets/[name][extname]",
       },
     },
   },

@@ -1,4 +1,5 @@
 import "./style.css";
+import { readHash, buildHash, navigateWithFade } from "./handoff.js";
 
 /* ------------------------------------------------------------------ *
  *  Inversia — zoomable streaming map
@@ -408,6 +409,7 @@ canvas.addEventListener("wheel", (e) => {
   const factor = e.ctrlKey ? 0.012 : 0.0022;
   zoomTarget = clamp(zoomTarget - d * factor, MIN_ZOOM, MAX_ZOOM);
   zoomAnchor = { x: e.clientX, y: e.clientY };
+  if (d > 0) maybeGoGlobe(); // zooming out past the world → fly up to the globe
 }, { passive: false });
 
 // ---- UI -----------------------------------------------------------------
@@ -458,9 +460,17 @@ function bindUI() {
   const nudgeZoom = (delta) => {
     zoomTarget = clamp(zoomTarget + delta, MIN_ZOOM, MAX_ZOOM);
     zoomAnchor = { x: W / 2, y: H / 2 };
+    if (delta < 0) maybeGoGlobe();
   };
   $("zoom-in").addEventListener("click", () => nudgeZoom(1));
   $("zoom-out").addEventListener("click", () => nudgeZoom(-1));
+  $("globe-link").addEventListener("click", (e) => {
+    e.preventDefault();
+    navigateWithFade("globe.html" + buildHash({
+      lat: wyToLat(view.wy), lon: wxToLon(view.wx),
+      invert: !!params.invert, sea: params.sea,
+    }));
+  });
   $("reset-view").addEventListener("click", () => {
     view.wx = 0.5;
     view.wy = 0.5;
@@ -581,12 +591,51 @@ function fail(msg) {
   }
 }
 
+// ---- cross-view handoff (map → globe) -----------------------------------
+// Zooming out past the point where the whole world fits flies up to the
+// globe, centred on wherever you were looking.
+let handoffReady = false;
+function maybeGoGlobe() {
+  if (!handoffReady) return false;
+  const fit = Math.max(MIN_ZOOM, Math.log2(Math.min(W, H) / TILE) - 0.05);
+  const GLOBE_AT = Math.max(MIN_ZOOM + 0.25, fit - 0.8);
+  if (zoomTarget > GLOBE_AT) return false;
+  const lat = wyToLat(view.wy), lon = wxToLon(view.wx);
+  if (!Number.isFinite(lat) || !Number.isFinite(lon)) return false;
+  navigateWithFade("globe.html" + buildHash({
+    lat, lon, invert: !!params.invert, sea: params.sea,
+  }));
+  return true;
+}
+
+// Restore state handed in from the globe (or a shared link).
+function applyHashState() {
+  const s = readHash();
+  if (s.sea != null) {
+    const seaEl = $("sea");
+    seaEl.value = clamp(s.sea, +seaEl.min, +seaEl.max);
+    seaEl.dispatchEvent(new Event("input"));
+  }
+  if (s.invert != null && params.invert !== (s.invert ? 1 : 0)) $("mode-toggle").click();
+  if (s.lat != null && s.lon != null) {
+    view.wx = lonToWX(s.lon);
+    view.wy = clamp(latToWY(s.lat), 0, 1);
+  }
+  if (s.zoom != null) view.zoom = clamp(s.zoom, MIN_ZOOM, MAX_ZOOM);
+  zoomTarget = view.zoom;
+  zoomAnchor = null;
+  clampView();
+  updateReadout();
+}
+
 // ---- go -----------------------------------------------------------------
 resize();
 view.zoom = Math.max(MIN_ZOOM, Math.log2(Math.min(W, H) / TILE) - 0.05);
+zoomTarget = view.zoom;
 bindUI();
-updateReadout();
+applyHashState();
 loadWorldStat();
 requestAnimationFrame(frame);
+setTimeout(() => { handoffReady = true; }, 500);
 // Safety net: never leave the loader spinning forever if a few tiles stall.
 setTimeout(() => $("loader").classList.add("hidden"), 6000);

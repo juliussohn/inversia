@@ -30,7 +30,7 @@
     <!-- HUD -->
     <header id="brand">
       <h1>INVERSIA</h1>
-      <p>The inside-out Earth — oceans become land, land becomes ocean.</p>
+      <p>The inside-out Earth — oceans become land, land becomes ocean. Zoom in to dive into the map.</p>
     </header>
 
     <section id="panel" aria-label="Controls">
@@ -52,10 +52,10 @@
 
       <div class="control">
         <div class="control-head">
-          <label for="exag">Relief exaggeration</label>
-          <span id="exag-value" class="value">×25</span>
+          <label for="relief">Relief shading</label>
+          <span id="relief-value" class="value">100%</span>
         </div>
-        <input id="exag" type="range" min="0" max="60" step="1" value="25" />
+        <input id="relief" type="range" min="0" max="200" step="5" value="100" />
       </div>
 
       <div id="stats" class="stats">
@@ -63,12 +63,14 @@
         <div><span class="dot sea"></span><span id="sea-pct">—</span> ocean</div>
       </div>
 
+      <div id="readout" class="readout">—</div>
+
       <div class="row buttons">
         <button id="spin-toggle" class="ghost" type="button">⟳ Auto-spin: on</button>
         <button id="reset-view" class="ghost" type="button">Reset view</button>
       </div>
       <div class="row buttons">
-        <a class="ghost" href="index.html">🔍 Zoomable map view</a>
+        <a id="map-link" class="ghost" href="index.html">🔍 Zoomable map view</a>
       </div>
 
       <details class="about">
@@ -81,7 +83,7 @@
           into a new world ocean. Drag the <em>water level</em> to flood or drain
           the planet, and toggle between the real Earth and its inverse.
         </p>
-        <p class="src">Elevation: GMT <code>earth_relief</code> (NOAA / GEBCO, public domain).</p>
+        <p class="src">Elevation: AWS / Mapzen Terrain Tiles (Terrarium, public domain), streamed live.</p>
       </details>
     </section>
 
@@ -91,6 +93,6 @@
       <div class="legend-row"><span>ocean trench</span><span>water</span><span>peaks</span></div>
     </div>
 
-    <script type="module" src="/src/main.js"></script>
+    <script type="module" src="/src/tileglobe.js"></script>
   </body>
 </html>
