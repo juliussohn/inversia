@@ -34,6 +34,12 @@ html, body {
 /* the presentation that isn't active is hidden and stops taking input */
 .view-canvas.inactive { display: none; }
 
+/* vector overlay: floats above whichever view is active, never eats input */
+#overlay {
+  position: fixed; inset: 0; width: 100%; height: 100%;
+  z-index: 6; pointer-events: none; display: block;
+}
+
 #zoom-controls {
   position: fixed; right: 22px; bottom: 22px; z-index: 12;
   display: flex; flex-direction: column; gap: 6px;
@@ -151,6 +157,18 @@ input[type="range"]::-moz-range-thumb {
 #exag { background: linear-gradient(90deg, #2a3550, #58c2e8); }
 
 .ticks { display: flex; justify-content: space-between; margin-top: 5px; color: var(--muted); font-size: 10.5px; }
+
+/* ---- feature-layer toggles (one row per registered feature type) ---- */
+.layers {
+  display: flex; flex-wrap: wrap; gap: 6px 14px;
+  margin: 14px 2px 2px; padding-top: 12px;
+  border-top: 1px solid var(--panel-border);
+}
+.layers label {
+  display: inline-flex; align-items: center; gap: 7px;
+  font-size: 12.5px; color: var(--text); cursor: pointer; user-select: none;
+}
+.layers input { accent-color: #e9c97a; width: 14px; height: 14px; cursor: pointer; }
 
 .stats {
   display: flex; gap: 18px; margin: 16px 2px 6px;
