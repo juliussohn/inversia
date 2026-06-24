@@ -3,19 +3,12 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
-    <title>Inversia — zoomable inverted Earth</title>
-    <meta name="description" content="A zoomable map of Inversia: Earth's elevation inverted so oceans become land and land becomes ocean, streamed in real detail. Drag the water level up and down." />
+    <title>Inversia — the inside-out Earth</title>
+    <meta name="description" content="An interactive globe of Inversia: invert Earth's elevation so the oceans become land and the continents become sea, then move the water level up and down." />
     <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><circle cx='50' cy='50' r='46' fill='%230d2350'/><circle cx='50' cy='50' r='46' fill='none' stroke='%234e7a3e' stroke-width='8' stroke-dasharray='40 18 24 30'/></svg>" />
   </head>
-  <body class="map-mode">
-    <canvas id="map"></canvas>
-
-    <div id="loader">
-      <div class="loader-inner">
-        <div class="spinner"></div>
-        <p id="loader-text">Loading Inversia…</p>
-      </div>
-    </div>
+  <body>
+    <div id="app"></div>
 
     <button id="ui-toggle" type="button" title="Hide controls" aria-label="Toggle controls">
       <span class="i-hide" aria-hidden="true">
@@ -26,14 +19,18 @@
       </span>
     </button>
 
-    <div id="zoom-controls">
-      <button id="zoom-in" type="button" aria-label="Zoom in">+</button>
-      <button id="zoom-out" type="button" aria-label="Zoom out">−</button>
+    <!-- Loading / error overlay -->
+    <div id="loader">
+      <div class="loader-inner">
+        <div class="spinner"></div>
+        <p id="loader-text">Building Inversia…</p>
+      </div>
     </div>
 
+    <!-- HUD -->
     <header id="brand">
       <h1>INVERSIA</h1>
-      <p>The inside-out Earth — drag to explore, pinch to zoom.</p>
+      <p>The inside-out Earth — oceans become land, land becomes ocean.</p>
     </header>
 
     <section id="panel" aria-label="Controls">
@@ -55,10 +52,10 @@
 
       <div class="control">
         <div class="control-head">
-          <label for="relief">Relief shading</label>
-          <span id="relief-value" class="value">100%</span>
+          <label for="exag">Relief exaggeration</label>
+          <span id="exag-value" class="value">×25</span>
         </div>
-        <input id="relief" type="range" min="0" max="200" step="5" value="100" />
+        <input id="exag" type="range" min="0" max="60" step="1" value="25" />
       </div>
 
       <div id="stats" class="stats">
@@ -66,22 +63,25 @@
         <div><span class="dot sea"></span><span id="sea-pct">—</span> ocean</div>
       </div>
 
-      <div id="readout" class="readout">—</div>
-
       <div class="row buttons">
-        <a id="globe-link" class="ghost" href="globe.html">◐ Globe view</a>
-        <button id="reset-view" class="ghost" type="button">Reset</button>
+        <button id="spin-toggle" class="ghost" type="button">⟳ Auto-spin: on</button>
+        <button id="reset-view" class="ghost" type="button">Reset view</button>
+      </div>
+      <div class="row buttons">
+        <a class="ghost" href="index.html">🔍 Zoomable map view</a>
       </div>
 
       <details class="about">
         <summary>What is this?</summary>
         <p>
-          Inversia flips Earth's elevation upside-down: the deep ocean basins
-          become new continents and today's land sinks beneath a new world ocean.
-          This view streams real high-resolution elevation so you can zoom right
-          in. Drag the <em>water level</em> to flood or drain the planet.
+          Every point on Earth has an elevation — mountains rise thousands of
+          metres above the sea, and the ocean floor drops just as far below it.
+          <strong>Inversia</strong> flips that height field upside-down: the deep
+          ocean basins become towering new continents, and today's land sinks
+          into a new world ocean. Drag the <em>water level</em> to flood or drain
+          the planet, and toggle between the real Earth and its inverse.
         </p>
-        <p class="src">Elevation: AWS / Mapzen Terrain Tiles (Terrarium, public domain).</p>
+        <p class="src">Elevation: GMT <code>earth_relief</code> (NOAA / GEBCO, public domain).</p>
       </details>
     </section>
 
@@ -91,6 +91,6 @@
       <div class="legend-row"><span>ocean trench</span><span>water</span><span>peaks</span></div>
     </div>
 
-    <script type="module" src="/src/map.js"></script>
+    <script type="module" src="/src/main.js"></script>
   </body>
 </html>

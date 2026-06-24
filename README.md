@@ -1,23 +1,25 @@
 # Inversia 🌍↔️🌊
 
-An interactive 3D globe of **Inversia** — Earth turned inside-out.
+**Inversia** is Earth turned inside-out. Every point has an elevation: mountains
+rise kilometres above the sea, and the ocean floor drops just as far below it.
+Inversia **flips that height field upside-down** — the deep ocean basins and
+trenches become towering new continents, while today's land sinks into a new
+world ocean. A mid-ocean ridge becomes a mountain range; the Mariana Trench
+becomes the highest peak on the planet.
 
-Every point on Earth has an elevation: mountains rise kilometres above the sea,
-and the ocean floor drops just as far below it. Inversia **flips that height
-field upside-down** — the deep ocean basins and trenches become towering new
-continents, while today's land sinks into a new world ocean. A mid-ocean ridge
-becomes a mountain range; the Mariana Trench becomes the highest peak on the
-planet.
+Two views, both rendered live in a WebGL shader from real **topography +
+bathymetry** data:
 
-The globe is rendered live in a WebGL shader from a real **topography +
-bathymetry** dataset, so you can:
+- **Zoomable map** (`index.html`) — a streaming Web-Mercator map that pulls real
+  high-resolution elevation tiles on demand, so you can pan and zoom right down
+  to mountain-range detail. Drag to explore, pinch/scroll to zoom.
+- **3D globe** (`globe.html`) — the whole inverted planet as a spinning globe,
+  good for the big picture.
 
-- **Toggle** between the real Earth and its inverse.
-- **Drag the water level** up and down (−8000 m … +6000 m) to flood or drain
-  the planet and watch coastlines redraw in real time.
-- See the **land / ocean split** update as you go (Real Earth at sea level reads
-  ~29 % land, exactly as it should).
-- **Exaggerate the relief**, spin, zoom and orbit.
+In either view you can **toggle** between the real Earth and its inverse, **drag
+the water level** (−8000 m … +6000 m) to flood or drain the planet with
+coastlines redrawing in real time, and watch the **land / ocean split** update
+(Real Earth at sea level reads ~29 % land, exactly as it should).
 
 ## Run it
 
@@ -34,6 +36,17 @@ npm run preview  # serve the production build locally
 ```
 
 ## How it works
+
+- **Zoomable map** (`src/map.js`) streams **Terrarium** elevation tiles (real
+  topography + bathymetry, public domain) from [AWS Terrain
+  Tiles](https://registry.opendata.aws/terrain-tiles/). A custom WebGL2 slippy
+  map decodes each tile's elevation (`R*256 + G + B/256 − 32768` m), inverts it,
+  floods below the water level, and colours it hypsometrically with hillshading.
+  Water level and inversion are shader uniforms, so they update instantly with
+  no re-fetching. Tiles stream with LOD + ancestor fallback as you zoom.
+- **3D globe** (`src/main.js`) uses a baked global heightmap.
+
+### Globe data
 
 - **Data** — `data/earth_relief_01d.txt` is the GMT global 1° *earth relief*
   grid (real topography **and** bathymetry, in metres), derived from NOAA/GEBCO
