@@ -4,7 +4,9 @@ import { defineConfig } from "vite";
 // production build needs an absolute base of "/inversia/" — a relative "./"
 // base breaks whenever the URL loses its trailing slash. Dev still serves at "/".
 //
-// Two pages: index.html (zoomable streaming map) and globe.html (3D globe).
+// One app (index.html) holds both presentations — the 3D globe and the
+// zoomable streaming map — and crossfades between them. globe.html is kept only
+// as a redirect so old links still resolve.
 // Asset filenames are kept stable (no content hash) so a cached index.html —
 // GitHub Pages caches HTML ~10 min — keeps pointing at files that still exist
 // after the next deploy.

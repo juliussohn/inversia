@@ -1,13 +1,11 @@
 /* ------------------------------------------------------------------ *
- *  Cross-view handoff between the globe (overview) and the zoomable map
- *  (detail). The two are separate pages; we carry the shared view state
- *  — where you are and how the world is set — across them in the URL hash
- *  and mask the page swap with a short fade, so it reads as one
- *  continuous zoom (globe ⟶ dive into map, map ⟶ fly up to globe).
+ *  Shareable view state, encoded in the URL hash. The globe and map are now
+ *  one page, so this is no longer a page-to-page handoff — it's a deep link:
+ *  a URL that restores where you were looking and how the world was set.
  *
  *  Hash format:  #lat=..&lon=..&z=..&v=<0|1>&sea=<m>
  *    lat,lon : centre of the view, degrees
- *    z       : map zoom (ignored by the globe)
+ *    z       : zoom (≥3 opens straight into the map; lower lands on the globe)
  *    v       : 1 = Inversia (inverted), 0 = real Earth
  *    sea     : water level, metres
  * ------------------------------------------------------------------ */
@@ -35,20 +33,4 @@ export function buildHash({ lat, lon, zoom, invert, sea } = {}) {
   if (invert != null) p.set("v", invert ? "1" : "0");
   if (sea != null) p.set("sea", String(Math.round(sea)));
   return "#" + p.toString();
-}
-
-// Fade to a deep-space colour, then navigate — hides the page reload so the
-// transition feels like part of the zoom rather than a hard cut.
-export function navigateWithFade(href) {
-  const o = document.createElement("div");
-  o.style.cssText =
-    "position:fixed;inset:0;z-index:999;background:#05070d;opacity:0;" +
-    "transition:opacity .24s ease;pointer-events:none";
-  document.body.appendChild(o);
-  requestAnimationFrame(() => {
-    o.style.opacity = "1";
-  });
-  setTimeout(() => {
-    location.href = href;
-  }, 250);
 }

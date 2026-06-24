@@ -3,18 +3,20 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
-    <title>Inversia — zoomable inverted Earth</title>
-    <meta name="description" content="A zoomable map of Inversia: Earth's elevation inverted so oceans become land and land becomes ocean, streamed in real detail. Drag the water level up and down." />
+    <title>Inversia — the inside-out Earth</title>
+    <meta name="description" content="An interactive Inversia: Earth's elevation inverted so oceans become land and land becomes ocean. One world, two presentations — a 3D globe that flattens into a deep-zoom streaming map. Drag the water level up and down." />
     <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><circle cx='50' cy='50' r='46' fill='%230d2350'/><circle cx='50' cy='50' r='46' fill='none' stroke='%234e7a3e' stroke-width='8' stroke-dasharray='40 18 24 30'/></svg>" />
   </head>
-  <body class="map-mode">
-    <canvas id="map"></canvas>
+  <body class="mode-globe">
+    <!-- Two presentations of one world, stacked; the orchestrator crossfades. -->
+    <canvas id="globe-canvas" class="view-canvas"></canvas>
+    <canvas id="map" class="view-canvas"></canvas>
     <div id="me-dot" aria-hidden="true"></div>
 
     <div id="loader">
       <div class="loader-inner">
         <div class="spinner"></div>
-        <p id="loader-text">Loading Inversia…</p>
+        <p id="loader-text">Building Inversia…</p>
       </div>
     </div>
 
@@ -37,7 +39,7 @@
 
     <header id="brand">
       <h1>INVERSIA</h1>
-      <p>The inside-out Earth — drag to explore, pinch to zoom. Zoom out for the globe.</p>
+      <p>The inside-out Earth — oceans become land, land becomes ocean. Zoom in to dive from the globe into the map.</p>
     </header>
 
     <section id="panel" aria-label="Controls">
@@ -73,19 +75,25 @@
       <div id="readout" class="readout">—</div>
 
       <div class="row buttons">
-        <a id="globe-link" class="ghost" href="globe.html">◐ Globe view</a>
-        <button id="reset-view" class="ghost" type="button">Reset</button>
+        <button id="view-toggle" class="ghost" type="button">◐ Globe / 🔍 Map</button>
+        <button id="reset-view" class="ghost" type="button">Reset view</button>
       </div>
 
       <details class="about">
         <summary>What is this?</summary>
         <p>
-          Inversia flips Earth's elevation upside-down: the deep ocean basins
-          become new continents and today's land sinks beneath a new world ocean.
-          This view streams real high-resolution elevation so you can zoom right
-          in. Drag the <em>water level</em> to flood or drain the planet.
+          Every point on Earth has an elevation — mountains rise thousands of
+          metres above the sea, and the ocean floor drops just as far below it.
+          <strong>Inversia</strong> flips that height field upside-down: the deep
+          ocean basins become towering new continents, and today's land sinks
+          into a new world ocean. Drag the <em>water level</em> to flood or drain
+          the planet, and toggle between the real Earth and its inverse.
         </p>
-        <p class="src">Elevation: AWS / Mapzen Terrain Tiles (Terrarium, public domain).</p>
+        <p>
+          It's one dataset shown two ways: a 3D globe for the overview that
+          flattens into a deep-zoom streaming map as you dive in.
+        </p>
+        <p class="src">Elevation: AWS / Mapzen Terrain Tiles (Terrarium, public domain), streamed live.</p>
       </details>
     </section>
 
@@ -95,6 +103,6 @@
       <div class="legend-row"><span>ocean trench</span><span>water</span><span>peaks</span></div>
     </div>
 
-    <script type="module" src="/src/map.js"></script>
+    <script type="module" src="/src/app.js"></script>
   </body>
 </html>
