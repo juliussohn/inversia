@@ -14,7 +14,6 @@
     "@turf/turf": "^7.3.5",
     "maplibre-gl": "^5.24.0",
     "polygon-clipping": "^0.15.7",
-    "three": "^0.160.0",
     "tweakpane": "^4.0.5"
   },
   "devDependencies": {

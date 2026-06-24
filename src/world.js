@@ -1,11 +1,15 @@
 /* ------------------------------------------------------------------ *
- *  Inversia — procedural world platform (MapLibre shell, Phase 1)
+ *  Inversia — procedural world platform (MapLibre entry point)
  *
- *  This is the NEW entry point that the migration grows into. It mounts a
- *  MapLibre GL map (mercator) on a placeholder basemap and binds the world
- *  recipe to: (1) an auto-generated Tweakpane panel and (2) the URL hash, so
- *  edits round-trip through a shared link. No terrain or generated features
- *  yet — those land in later phases. The legacy app (src/app.js) is untouched.
+ *  The single entry point and single renderer. It mounts a MapLibre GL map
+ *  under globe projection, draws the live inverted terrain as a custom layer
+ *  (src/world/terrain-layer.js), and binds the world recipe to: (1) an
+ *  auto-generated Tweakpane panel and (2) the URL hash, so edits round-trip
+ *  through a shared link. Zooming out shows the inverted globe; zooming in is
+ *  the same world flattening into a deep-zoom map — one renderer, no seam.
+ *
+ *  Generated features (coastlines, rivers, countries, cities…) land in later
+ *  phases as MapLibre GeoJSON layers on top of this terrain.
  * ------------------------------------------------------------------ */
 
 import maplibregl from "maplibre-gl";
@@ -21,13 +25,16 @@ import { loadWorldStat, landFraction } from "./terrain.js";
 // Seed it straight from the URL hash so a shared link restores the same world.
 const recipe = decodeHash(location.hash);
 
-// ---- placeholder basemap -------------------------------------------------
-// A minimal valid style: a solid background, no tiles/terrain yet. Its colour
-// is derived from the recipe so panel edits are visibly wired end-to-end until
-// the real terrain layer (Phase 2) takes over.
+// ---- base style ----------------------------------------------------------
+// A minimal valid style under globe projection: just a solid background sphere
+// that the terrain custom layer draws on top of. The background still shows
+// through where the terrain can't — behind the globe and in the tiny polar gap
+// beyond Web-Mercator's ~±85° limit — so its colour is derived from the recipe
+// to stay in keeping with the world.
 function baseStyle() {
   return {
     version: 8,
+    projection: { type: "globe" },
     sources: {},
     layers: [
       { id: "bg", type: "background", paint: { "background-color": backgroundFor(recipe) } },
@@ -36,7 +43,7 @@ function baseStyle() {
 }
 
 // Inverted worlds read cooler/deeper; water level nudges the tone lighter as it
-// rises. Purely a placeholder cue so Phase 1 has something to look at.
+// rises — a quiet backdrop tone behind and beyond the globe.
 function backgroundFor(r) {
   const inv = r.world.invert;
   const t = (r.world.water + 8000) / 14000; // 0..1 across the slider range
@@ -51,15 +58,13 @@ const map = new maplibregl.Map({
   style: baseStyle(),
   center: [0, 20],
   zoom: 2,
-  // Phase 2 is mercator-only; rotation/pitch would break the terrain layer's
-  // visible-bounds math (and globe is Phase 3), so lock the camera flat.
-  dragRotate: false,
-  pitchWithRotate: false,
-  maxPitch: 0,
+  // Phase 3: the style declares globe projection. The terrain custom layer
+  // projects through MapLibre's own `projectTile`, so it follows the
+  // globe⇄mercator morph for free — panning spins the planet, zooming in
+  // flattens it into the map with no handoff seam.
   attributionControl: false,
 });
-map.touchZoomRotate.disableRotation();
-map.addControl(new maplibregl.NavigationControl({ visualizePitch: false, showCompass: false }), "bottom-right");
+map.addControl(new maplibregl.NavigationControl({ visualizePitch: true, showCompass: true }), "bottom-right");
 map.addControl(new maplibregl.AttributionControl({ compact: true }), "bottom-left");
 
 // The live inverted terrain renderer. It reads invert/water/relief straight off
