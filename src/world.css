@@ -1,0 +1,45 @@
+/* ------------------------------------------------------------------ *
+ *  Inversia — procedural world platform shell styles (Phase 1)
+ *  Full-bleed MapLibre map with the Tweakpane recipe panel floating over it.
+ * ------------------------------------------------------------------ */
+
+html,
+body {
+  margin: 0;
+  height: 100%;
+  background: #0d1b2a;
+  font-family: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+}
+
+#map {
+  position: fixed;
+  inset: 0;
+}
+
+/* Recipe panel — top-left, above the map. Tweakpane themes itself; we just
+   place and size the host. */
+#panel {
+  position: fixed;
+  top: 12px;
+  left: 12px;
+  width: 280px;
+  z-index: 10;
+}
+
+#brand {
+  position: fixed;
+  bottom: 12px;
+  left: 12px;
+  z-index: 5;
+  color: #cfe0f5;
+  font-size: 12px;
+  letter-spacing: 0.04em;
+  text-shadow: 0 1px 2px rgba(0, 0, 0, 0.6);
+  pointer-events: none;
+}
+
+#brand strong {
+  display: block;
+  font-size: 18px;
+  letter-spacing: 0.12em;
+}

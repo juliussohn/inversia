@@ -18,6 +18,9 @@ export default defineConfig(({ command }) => ({
       input: {
         main: "index.html",
         globe: "globe.html",
+        // New procedural-world platform entry (Phase 1 migration). Runs in
+        // parallel to the legacy app until the migration completes.
+        world: "world.html",
       },
       output: {
         entryFileNames: "assets/[name].js",
