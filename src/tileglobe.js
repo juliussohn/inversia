@@ -212,6 +212,9 @@ export function createGlobeView(canvas, params, hooks = {}) {
   let W = 0, H = 0, dpr = 1;
   let running = false, rafId = 0, lastT = 0;
   let active = false;
+  // last frame's camera, kept so the vector overlay can project lon/lat onto
+  // exactly what the GPU just drew: { vp, dir, cosHorizon }
+  let lastProj = null;
 
   const tiles = createTileCache(gl);
 
@@ -269,6 +272,7 @@ export function createGlobeView(canvas, params, hooks = {}) {
     const cosHorizon = clamp(R / cam.dist, -1, 1);
     const horizon = Math.acos(cosHorizon) + 0.15;
     const center = [dir[0], dir[1], dir[2]];
+    lastProj = { vp: viewProj, dir, cosHorizon };
 
     const cwx = lonToWXg(cam.lon), cwy = clamp(latToWYg(clamp(cam.lat, -MERC_LAT, MERC_LAT)), 0, 1);
     const ctx = Math.floor(cwx * n), cty = Math.floor(cwy * n);
@@ -425,5 +429,24 @@ export function createGlobeView(canvas, params, hooks = {}) {
       if (factor < 1) maybeZoomIn();
     },
     reset() { target.lon = cam.lon; target.lat = 20; target.dist = 3.2; },
+    // lon/lat → screen px (CSS px) through last frame's view-projection, for the
+    // vector overlay. Points on the far hemisphere (behind the limb) report
+    // vis:false so the overlay can drop border segments the globe occludes.
+    project(lon, lat) {
+      if (!lastProj) return { x: 0, y: 0, vis: false };
+      const p = dirOf(lon, lat); // surface point on the unit sphere (R = 1)
+      const { vp, dir, cosHorizon } = lastProj;
+      if (p[0] * dir[0] + p[1] * dir[1] + p[2] * dir[2] < cosHorizon)
+        return { x: 0, y: 0, vis: false };
+      const cw = vp[3] * p[0] + vp[7] * p[1] + vp[11] * p[2] + vp[15];
+      if (cw <= 0) return { x: 0, y: 0, vis: false };
+      const cx = vp[0] * p[0] + vp[4] * p[1] + vp[8] * p[2] + vp[12];
+      const cy = vp[1] * p[0] + vp[5] * p[1] + vp[9] * p[2] + vp[13];
+      return {
+        x: (cx / cw * 0.5 + 0.5) * W,
+        y: (1 - (cy / cw * 0.5 + 0.5)) * H,
+        vis: true,
+      };
+    },
   };
 }

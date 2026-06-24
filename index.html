@@ -11,6 +11,8 @@
     <!-- Two presentations of one world, stacked; the orchestrator crossfades. -->
     <canvas id="globe-canvas" class="view-canvas"></canvas>
     <canvas id="map" class="view-canvas"></canvas>
+    <!-- procedural vector features (borders, later cities/lakes) draw here -->
+    <canvas id="overlay"></canvas>
     <div id="me-dot" aria-hidden="true"></div>
 
     <div id="loader">
@@ -66,6 +68,8 @@
         </div>
         <input id="relief" type="range" min="0" max="200" step="5" value="100" />
       </div>
+
+      <div id="layers" class="layers" aria-label="Map features"></div>
 
       <div id="stats" class="stats">
         <div><span class="dot land"></span><span id="land-pct">—</span> land</div>

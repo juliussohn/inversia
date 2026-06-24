@@ -344,6 +344,19 @@ export function createMapView(canvas, params, hooks = {}) {
       clampView(); emitReadout();
     },
     flyToLatLon(lat, lon, zoom) { flyTo(lonToWX(lon), latToWY(lat), zoom); },
+    // lon/lat → screen px (CSS px), for the vector overlay. Always "visible"
+    // (the flat map has no occluding limb); seam-wrapping is handled by the
+    // shortest-offset math, matching how the "me" dot is placed.
+    project(lon, lat) {
+      const worldPx = TILE * Math.pow(2, view.zoom);
+      let dx = lonToWX(lon) - view.wx;
+      dx = ((dx % 1) + 1.5) % 1 - 0.5;
+      return {
+        x: dx * worldPx + W / 2,
+        y: (latToWY(lat) - view.wy) * worldPx + H / 2,
+        vis: true,
+      };
+    },
     setMeMarker(lat, lon) { meMarker = { wx: lonToWX(lon), wy: latToWY(lat) }; },
     bindMeDot(el) { meDotEl = el; },
   };

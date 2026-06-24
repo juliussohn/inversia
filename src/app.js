@@ -3,6 +3,8 @@ import { createMapView } from "./map.js";
 import { createGlobeView } from "./tileglobe.js";
 import { loadWorldStat, landFraction, clamp } from "./terrain.js";
 import { readHash, buildHash } from "./handoff.js";
+import { createOverlay } from "./overlay.js";
+import { createFeatureLayer } from "./features/layer.js";
 
 /* ------------------------------------------------------------------ *
  *  Inversia — one world, two presentations
@@ -25,20 +27,28 @@ const params = { invert: 1, sea: 0, relief: 1.0 };
 // globe — making the crossfade hard to notice.
 const SWITCH_ZOOM = 6;
 
-let mode = "globe";          // "globe" | "map"
+// Globe presentation is currently disabled — the app shows only the flat map.
+// Flip this back to `true` to restore the zoom-out-to-globe crossfade; all the
+// globe wiring below is guarded by it, so nothing else needs to change.
+const GLOBE_ENABLED = false;
+
+let mode = GLOBE_ENABLED ? "globe" : "map"; // "globe" | "map"
 let switching = false;       // guards against re-entrant / bouncing switches
 
-// ---- mount both renderers ------------------------------------------------
-let globe, map;
+// ---- mount the renderer(s) -----------------------------------------------
+let globe = null, map;
 try {
-  globe = createGlobeView($("globe-canvas"), params, {
-    switchZoom: SWITCH_ZOOM,
-    onZoomIn: (geo) => switchTo("map", geo),
-    onReadout: (t) => { if (mode === "globe") setReadout(t); },
-  });
+  if (GLOBE_ENABLED) {
+    globe = createGlobeView($("globe-canvas"), params, {
+      switchZoom: SWITCH_ZOOM,
+      onZoomIn: (geo) => switchTo("map", geo),
+      onReadout: (t) => { if (mode === "globe") setReadout(t); },
+    });
+  }
   map = createMapView($("map"), params, {
     switchZoom: SWITCH_ZOOM,
-    onZoomOut: (geo) => switchTo("globe", geo),
+    // only hand zoom-out back to the globe when the globe exists
+    onZoomOut: GLOBE_ENABLED ? (geo) => switchTo("globe", geo) : undefined,
     onReadout: (t) => { if (mode === "map") setReadout(t); },
   });
 } catch (err) {
@@ -46,6 +56,19 @@ try {
   throw err;
 }
 map.bindMeDot($("me-dot"));
+
+// ---- procedural vector features (borders, later cities/lakes) -----------
+// One overlay canvas + one feature layer, shared by both presentations. The
+// layer regenerates (debounced) when the world changes; the overlay draws the
+// latest geometry through whichever view is active each frame.
+const overlay = createOverlay($("overlay"));
+const features = createFeatureLayer(params);
+
+function overlayFrame() {
+  overlay.render(activeView().project, features.getFeatures());
+  requestAnimationFrame(overlayFrame);
+}
+requestAnimationFrame(overlayFrame);
 
 function setReadout(t) { const el = $("readout"); if (el) el.textContent = t; }
 function activeView() { return mode === "globe" ? globe : map; }
@@ -89,6 +112,7 @@ function bindUI() {
     params.sea = +sea.value;
     seaV.textContent = `${params.sea > 0 ? "+" : ""}${params.sea} m`;
     refreshStats();
+    features.invalidate(); // coastlines moved → regrow borders (debounced)
     syncHash();
   });
   relief.addEventListener("input", () => {
@@ -99,12 +123,15 @@ function bindUI() {
     params.invert = params.invert ? 0 : 1;
     setInvertLabel();
     refreshStats();
+    features.invalidate(); // a different world ⇒ a different political map
     syncHash();
   });
 
   // manual presentation toggle (independent of zoom). Open the map above the
-  // crossover so it doesn't immediately read as "zoomed out".
-  if (viewToggle) viewToggle.addEventListener("click", () => {
+  // crossover so it doesn't immediately read as "zoomed out". With the globe
+  // disabled there's nothing to switch to, so hide the control entirely.
+  if (viewToggle && !GLOBE_ENABLED) viewToggle.style.display = "none";
+  else if (viewToggle) viewToggle.addEventListener("click", () => {
     if (switching) return;
     const geo = activeView().getGeo();
     if (mode === "globe") switchTo("map", { ...geo, zoom: clamp(Math.max(geo.zoom, SWITCH_ZOOM + 1), SWITCH_ZOOM + 0.6, 13) });
@@ -129,7 +156,26 @@ function bindUI() {
   $("reset-view").addEventListener("click", () => activeView().reset());
 
   bindLocate();
+  buildLayerToggles();
   setInvertLabel();
+}
+
+// ---- feature toggles -----------------------------------------------------
+// Built from the layer's registry, so adding a feature type (cities, lakes…)
+// surfaces a checkbox here automatically — no per-type UI code.
+function buildLayerToggles() {
+  const host = $("layers");
+  if (!host) return;
+  for (const t of features.types()) {
+    const id = `layer-${t.id}`;
+    const label = document.createElement("label");
+    label.htmlFor = id;
+    const cb = document.createElement("input");
+    cb.type = "checkbox"; cb.id = id; cb.checked = t.on;
+    cb.addEventListener("change", () => features.setEnabled(t.id, cb.checked));
+    label.append(cb, document.createTextNode(t.label));
+    host.appendChild(label);
+  }
 }
 
 // ---- "go to my location" -------------------------------------------------
@@ -193,7 +239,7 @@ function applyHashState() {
   // a link zoomed in past the crossover opens straight into the map; otherwise
   // the globe is the natural landing view
   if (s.lat != null && s.lon != null) {
-    if (s.zoom != null && s.zoom >= SWITCH_ZOOM) {
+    if (!GLOBE_ENABLED || (s.zoom != null && s.zoom >= SWITCH_ZOOM)) {
       mode = "map";
       map.setGeo({ lat: s.lat, lon: s.lon, zoom: s.zoom });
     } else {
@@ -216,7 +262,9 @@ loadWorldStat().then(refreshStats);
 // show the chosen presentation, park the other one
 document.body.classList.toggle("mode-globe", mode === "globe");
 document.body.classList.toggle("mode-map", mode === "map");
-(mode === "globe" ? map.canvas : globe.canvas).classList.add("inactive");
+// park the inactive canvas (the globe's element may have no renderer at all)
+const idle = mode === "globe" ? map.canvas : (globe ? globe.canvas : $("globe-canvas"));
+if (idle) idle.classList.add("inactive");
 activeView().start();
 syncHash();
 
