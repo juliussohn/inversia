@@ -327,15 +327,21 @@ function addFeatureLayers() {
     type: "symbol",
     source: "cities",
     layout: {
-      "icon-image": ["match", ["get", "tier"], "capital", "city-capital", "city-dot"],
+      // One dot image for every settlement; tier only nudges the size. Capitals
+      // read just a touch larger than a metropolis — a subtle step, not a jump.
+      "icon-image": "city-dot",
       "icon-size": [
         "interpolate", ["linear"], ["zoom"],
-        0, ["match", ["get", "tier"], "capital", 0.55, "metropolis", 0.45, "city", 0.32, 0.22],
-        4, ["match", ["get", "tier"], "capital", 0.85, "metropolis", 0.65, "city", 0.46, 0.32],
-        8, ["match", ["get", "tier"], "capital", 1.25, "metropolis", 0.95, "city", 0.7, 0.5],
+        0, ["match", ["get", "tier"], "capital", 0.3, "metropolis", 0.27, "city", 0.24, 0.21],
+        4, ["match", ["get", "tier"], "capital", 0.42, "metropolis", 0.38, "city", 0.34, 0.3],
+        8, ["match", ["get", "tier"], "capital", 0.58, "metropolis", 0.52, "city", 0.46, 0.4],
       ],
-      "icon-allow-overlap": false,
-      "icon-ignore-placement": false,
+      // Dots always draw (allow-overlap) and don't reserve collision space
+      // (ignore-placement) — like a maps app, every city keeps its dot at every
+      // zoom; only the name labels (separate layer) collide and thin out. These
+      // must be constants: MapLibre rejects feature-property expressions here.
+      "icon-allow-overlap": true,
+      "icon-ignore-placement": true,
       "icon-padding": 2,
       "symbol-sort-key": ["get", "rank"],
     },
@@ -475,32 +481,23 @@ function addFeatureLayers() {
 // (not SDF) — a light fill with a dark outline reads over both the relief terrain
 // and the flat paper land. Rendered at 2× and added with pixelRatio 2 so the
 // markers stay crisp; `icon-size` scales them per tier/zoom.
-function cityDot(diameter, ring) {
+function cityDot(diameter) {
   const s = diameter * 2; // 2× supersample
   const cv = document.createElement("canvas");
   cv.width = cv.height = s;
   const ctx = cv.getContext("2d");
   const cx = s / 2, cy = s / 2;
   const r = s / 2 - 2.5;
-  if (ring) {
-    // capital: a dark outer ring around a light disc, with a small dark centre
-    ctx.beginPath(); ctx.arc(cx, cy, r, 0, Math.PI * 2);
-    ctx.fillStyle = "#7a1f1f"; ctx.fill();
-    ctx.beginPath(); ctx.arc(cx, cy, r * 0.62, 0, Math.PI * 2);
-    ctx.fillStyle = "#fbf7ef"; ctx.fill();
-    ctx.beginPath(); ctx.arc(cx, cy, r * 0.28, 0, Math.PI * 2);
-    ctx.fillStyle = "#7a1f1f"; ctx.fill();
-  } else {
-    ctx.beginPath(); ctx.arc(cx, cy, r, 0, Math.PI * 2);
-    ctx.fillStyle = "#fbf7ef"; ctx.fill();
-    ctx.lineWidth = s * 0.14; ctx.strokeStyle = "#1a2230"; ctx.stroke();
-  }
+  // every settlement — capital included — is the same light disc with a dark
+  // outline; capitals just read larger (bigger base image + bigger icon-size).
+  ctx.beginPath(); ctx.arc(cx, cy, r, 0, Math.PI * 2);
+  ctx.fillStyle = "#fbf7ef"; ctx.fill();
+  ctx.lineWidth = s * 0.14; ctx.strokeStyle = "#1a2230"; ctx.stroke();
   return ctx.getImageData(0, 0, s, s);
 }
 
 function registerCityIcons() {
-  if (!map.hasImage("city-dot")) map.addImage("city-dot", cityDot(18, false), { pixelRatio: 2 });
-  if (!map.hasImage("city-capital")) map.addImage("city-capital", cityDot(22, true), { pixelRatio: 2 });
+  if (!map.hasImage("city-dot")) map.addImage("city-dot", cityDot(18), { pixelRatio: 2 });
 }
 
 // ---- recipe → URL hash ---------------------------------------------------
