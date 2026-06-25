@@ -266,6 +266,7 @@ worker.onmessage = (e) => {
   const payload = {
     coast: msg.coast, land: msg.land, lakes: msg.lakes, rivers: msg.rivers,
     countries: msg.countries, cities: msg.cities, countryLabels: msg.countryLabels,
+    oceanLabels: msg.oceanLabels, continentLabels: msg.continentLabels,
   };
   applyFeatures(payload);
 
@@ -294,6 +295,8 @@ function applyFeatures(p) {
   map.getSource("rivers")?.setData(p.rivers || empty);
   map.getSource("cities")?.setData(p.cities || empty);
   map.getSource("country-labels")?.setData(p.countryLabels || empty);
+  map.getSource("ocean-labels")?.setData(p.oceanLabels || empty);
+  map.getSource("continent-labels")?.setData(p.continentLabels || empty);
 }
 
 // Resolve with the current feature payload, awaiting the first generation if it
@@ -319,6 +322,12 @@ function addFeatureLayers() {
   // Phase 9: one label point per country (the borders source has no per-country
   // features to hang a name on — see the Phase 6/9 notes in docs/world-plan.md).
   map.addSource("country-labels", { type: "geojson", data: emptyFC() });
+  // Phase 12: one label per drowned continent ("African Ocean"), placed where that
+  // continent sits today (now water in the inverted world — see names.js).
+  map.addSource("ocean-labels", { type: "geojson", data: emptyFC() });
+  // Phase 12: the mirror — one label per risen ocean ("Pacifica"), placed where
+  // that ocean lies today (now land in the inverted world).
+  map.addSource("continent-labels", { type: "geojson", data: emptyFC() });
 
   // Always-mounted land fill — hidden in Relief (the terrain shader paints the
   // land), shown in the flat presets where it IS the land. Sits just above the
@@ -429,6 +438,37 @@ function addFeatureLayers() {
     paint: { "icon-opacity": 1 },
   });
 
+  // Continent names (Phase 12) — the risen oceans, as a faint earthy wash spread
+  // across the new land where each ocean lies today. Sits BENEATH the text-label
+  // group below so country/city/ocean names always read over it, like the big
+  // continent name printed under everything on an atlas. Wide-tracked uppercase,
+  // allowed to overlap (a handful, anchoring the map).
+  map.addLayer({
+    id: "continent-label",
+    type: "symbol",
+    source: "continent-labels",
+    // A globe/continental-view backdrop only: once you've zoomed past the regional
+    // threshold it's gone entirely (the opacity fade reaches 0 just before this cut).
+    maxzoom: 4,
+    layout: {
+      "text-field": ["get", "name"],
+      "text-font": ["Open Sans Semibold"],
+      "text-transform": "uppercase",
+      "text-letter-spacing": 0.4,
+      "text-size": ["interpolate", ["linear"], ["zoom"], 0, 15, 2.5, 21, 4, 23],
+      "text-max-width": 8,
+      "text-allow-overlap": true,
+      "text-ignore-placement": true,
+    },
+    paint: {
+      "text-color": "#6b5536",
+      "text-halo-color": "rgba(245,240,228,0.7)",
+      "text-halo-width": 1.6,
+      // a backdrop: boldest zoomed out (tier 1), faded fully out before the maxzoom cut.
+      "text-opacity": ["interpolate", ["linear"], ["zoom"], 0, 0.6, 2.5, 0.5, 3.6, 0],
+    },
+  });
+
   // ---- labels (Phase 9) --------------------------------------------------
   // Real MapLibre `text-field` labels, rendered from self-hosted Open Sans glyphs
   // (public/fonts/, declared as `glyphs` in baseStyle). The worker writes `name`
@@ -469,13 +509,19 @@ function addFeatureLayers() {
     id: "cities-label",
     type: "symbol",
     source: "cities",
+    minzoom: 2,
     layout: {
       "text-field": ["get", "name"],
       "text-font": ["Open Sans Regular"],
+      // Density-driven detail: every settlement is ELIGIBLE (no hard zoom gate), and
+      // collision decides what fits. `symbol-sort-key` (rank; 1 = biggest) places the
+      // important cities first, then leftover space backfills with smaller towns — so
+      // a quiet region surfaces detail instead of going blank, while a crowded one
+      // still thins to its biggest cities. Size only sets the visual weight per tier.
       "text-size": [
         "interpolate", ["linear"], ["zoom"],
-        0, ["match", ["get", "tier"], "capital", 12, "metropolis", 11, "city", 10, 9],
-        6, ["match", ["get", "tier"], "capital", 15, "metropolis", 13, "city", 12, 11],
+        2, ["match", ["get", "tier"], "capital", 12, "metropolis", 10.5, "city", 9.5, 9],
+        6, ["match", ["get", "tier"], "capital", 16, "metropolis", 13.5, "city", 12, 11],
       ],
       "text-anchor": "left",
       "text-offset": [0.7, 0],
@@ -497,11 +543,15 @@ function addFeatureLayers() {
     id: "rivers-label",
     type: "symbol",
     source: "rivers",
+    minzoom: 2.5,
     layout: {
       "symbol-placement": "line",
       "text-field": ["get", "name"],
       "text-font": ["Open Sans Italic"],
-      "text-size": 11,
+      // Biggest trunks first (sort-key by Strahler order); lesser channels backfill
+      // wherever a stretch of channel has room, so named rivers appear as space allows.
+      "text-size": ["interpolate", ["linear"], ["zoom"], 2.5, 10, 6, 12],
+      "symbol-sort-key": ["-", 0, ["get", "strahler"]],
       "text-letter-spacing": 0.08,
       "symbol-spacing": 500,
       "text-max-angle": 35,
@@ -516,14 +566,22 @@ function addFeatureLayers() {
   });
 
   // Lake names — italic blue at the polygon centroid (default point placement).
+  // Continent-scale basins are excluded here: they're named after the land they
+  // drowned by the ocean-label layer below, so labelling them twice would clash.
   map.addLayer({
     id: "lakes-label",
     type: "symbol",
     source: "lakes",
+    filter: ["<", ["get", "area_km2"], 5000000],
+    minzoom: 2,
     layout: {
       "text-field": ["get", "name"],
       "text-font": ["Open Sans Italic"],
-      "text-size": ["interpolate", ["linear"], ["zoom"], 0, 10, 6, 13],
+      // Bigger basins first (sort-key by area); smaller lakes backfill wherever the
+      // map has space rather than being hard-gated by zoom, so a sparse region still
+      // names its water instead of showing nothing.
+      "text-size": ["interpolate", ["linear"], ["zoom"], 2, 10, 6, 13],
+      "symbol-sort-key": ["-", 0, ["get", "area_km2"]],
       "text-allow-overlap": false,
       "text-padding": 2,
     },
@@ -534,6 +592,44 @@ function addFeatureLayers() {
       "text-opacity": 0.9,
     },
   });
+
+  // Ocean names (Phase 12) — the drowned continents. Big, wide-tracked, uppercase
+  // italic over the water, sitting where each continent lies today. Allowed to
+  // overlap (there are only a handful and they anchor the whole map) and the
+  // topmost label layer so a sea name always reads over the features inside it.
+  map.addLayer({
+    id: "ocean-label",
+    type: "symbol",
+    source: "ocean-labels",
+    layout: {
+      "text-field": ["get", "name"],
+      "text-font": ["Open Sans Italic"],
+      "text-transform": "uppercase",
+      "text-letter-spacing": 0.34,
+      "text-size": ["interpolate", ["linear"], ["zoom"], 0, 13, 3, 18, 6, 24],
+      "text-max-width": 8,
+      "text-allow-overlap": true,
+      "text-ignore-placement": true,
+    },
+    paint: {
+      "text-color": "#1a5878",
+      "text-halo-color": "rgba(236,246,250,0.85)",
+      "text-halo-width": 1.8,
+      "text-opacity": ["interpolate", ["linear"], ["zoom"], 0, 0.82, 5, 0.7, 8, 0.5],
+    },
+  });
+
+  // ---- label priority (Phase 12) -----------------------------------------
+  // MapLibre runs ONE global label-collision pass across every symbol layer, and
+  // the topmost layer is placed first — so stacking order IS the priority order.
+  // Re-stack the text labels into the reading hierarchy the world should have
+  // (oceans/continents are the backdrop; they allow-overlap and never collide):
+  //   country  >  city  >  lake  >  river,   with ocean names riding on top.
+  // moveLayer(id) with no anchor lifts a layer to the top, so calling these from
+  // lowest to highest priority leaves them stacked in exactly that order.
+  for (const id of ["rivers-label", "lakes-label", "cities-label", "country-label", "ocean-label"]) {
+    if (map.getLayer(id)) map.moveLayer(id);
+  }
 
   // Style switches are an INSTANT snap (no cross-fade): zero out the paint
   // transitions on every property a preset touches so swapping Relief↔Political↔
@@ -551,6 +647,8 @@ function addFeatureLayers() {
     ["cities-label", "text-opacity-transition"],
     ["rivers-label", "text-opacity-transition"],
     ["lakes-label", "text-opacity-transition"],
+    ["ocean-label", "text-opacity-transition"],
+    ["continent-label", "text-opacity-transition"],
     ["bg", "background-color-transition"],
   ]) {
     try { map.setPaintProperty(layer, prop, snap); } catch { /* ignore */ }

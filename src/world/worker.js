@@ -18,7 +18,8 @@
  *                      seed, count, areaSkew, ambition, ridge, river, seaCross,
  *                      density, spacing }
  *    worker → main : { type:"features", id, coast, land, lakes, rivers,
- *                      countries, cities, countryLabels, stats }
+ *                      countries, cities, countryLabels, oceanLabels,
+ *                      continentLabels, stats }
  *                    { type:"error",    id, message }
  *  The `id` lets the main thread ignore stale responses when a newer request has
  *  already been issued (e.g. fast successive slider settles).
@@ -118,7 +119,7 @@ self.onmessage = async (e) => {
     // re-name unconditionally rather than caching — it's a cheap O(N) pass next to
     // the generation work above, and keeps the freshly-extracted rivers named.
     step("naming");
-    const { countryLabels } = nameWorld({
+    const { countryLabels, oceanLabels, continentLabels } = nameWorld({
       seed: msg.seed,
       owner: countryCache.owner,
       isLand: countryCache.isLand,
@@ -138,6 +139,8 @@ self.onmessage = async (e) => {
       countries: countryCache.countries,
       cities: cityCache.cities,
       countryLabels,
+      oceanLabels,
+      continentLabels,
       stats: { ...coastCache.stats, ...riverStats, ...countryCache.stats, ...cityCache.stats },
     });
   } catch (err) {

@@ -25,6 +25,8 @@
  *  lon = -180 + (x+0.5)/W*360, lat = 90 - (y+0.5)/H*180; x wraps, y clamps.
  * ------------------------------------------------------------------ */
 
+import { CONTINENTS, NEW_CONTINENTS, FAMILY_ANCHORS } from "./geo-regions.js";
+
 // ---- language families ----------------------------------------------------
 // Each family is a tiny phonotactic grammar: consonant onsets, vowel nuclei,
 // syllable-coda consonants, and a set of place-name suffixes, plus how many
@@ -140,34 +142,24 @@ function makeName(seedNum, fam) {
   return name;
 }
 
-// ---- spatial family assignment --------------------------------------------
-// Scatter a handful of FAMILY ANCHORS over the actual countries and give each
-// country its nearest anchor's family. Geographic neighbours fall to the same
-// anchor → shared phonetic style, while a big continent can still straddle two
-// anchors (a believable language border). Deterministic from the seed.
-function assignFamilies(reps, seed) {
+// family key → index into FAMILIES, so the geographic anchors (which name their
+// family by key, not position) resolve to the array the generator samples.
+const FAMILY_IDX = Object.fromEntries(FAMILIES.map((f, i) => [f.key, i]));
+
+// ---- geographic family assignment -----------------------------------------
+// Pin the families to their REAL cultural homelands (see geo-regions.js) and give
+// each country its nearest anchor's family. Because the anchors sit at fixed Earth
+// coordinates, an Asian-sounding family falls near where Asia is today, a Nordic
+// one near Scandinavia, and neighbouring countries share a phonetic feel — the
+// language map mirrors Earth instead of reshuffling per seed (the seed still
+// drives the actual names, just not which family lands where).
+function assignFamilies(reps) {
   const fam = new Map();
   if (!reps.length) return fam;
-  const rng = mulberry32((seed >>> 0) ^ 0x5bd1e995);
 
-  // one anchor per ~handful of countries, capped at the family count.
-  const k = Math.min(FAMILIES.length, Math.max(2, Math.round(Math.sqrt(reps.length))));
-
-  // pick k distinct anchor countries (Fisher–Yates prefix).
-  const idx = reps.map((_, i) => i);
-  for (let i = idx.length - 1; i > 0; i--) {
-    const j = (rng() * (i + 1)) | 0;
-    [idx[i], idx[j]] = [idx[j], idx[i]];
-  }
-  // give the anchors a shuffled, distinct-where-possible set of families.
-  const order = FAMILIES.map((_, i) => i);
-  for (let i = order.length - 1; i > 0; i--) {
-    const j = (rng() * (i + 1)) | 0;
-    [order[i], order[j]] = [order[j], order[i]];
-  }
-  const anchors = idx.slice(0, k).map((ri, ai) => ({
-    v: ll2v(reps[ri].lon, reps[ri].lat),
-    fam: order[ai % order.length],
+  const anchors = FAMILY_ANCHORS.map((a) => ({
+    v: ll2v(a.lon, a.lat),
+    fam: FAMILY_IDX[a.fam] ?? 0,
   }));
 
   for (const r of reps) {
@@ -181,6 +173,12 @@ function assignFamilies(reps, seed) {
   }
   return fam;
 }
+
+// Continent-scale basins are named after the land they drowned, not given a
+// syllabic lake name. The lakes layer filters its labels by this same floor so the
+// two never double up (see world.js). 5 Mkm² keeps the true continents (Australia
+// up) and leaves big islands (Greenland, Borneo) as ordinary named lakes.
+export const CONT_FLOOR_KM2 = 5_000_000;
 
 // ---- the world naming pass ------------------------------------------------
 /**
@@ -235,7 +233,7 @@ export function nameWorld({ seed, owner, isLand, W, H, cities, rivers, lakes }) 
     });
   }
 
-  const famByCountry = assignFamilies(reps, seed);
+  const famByCountry = assignFamilies(reps);
 
   // nearest country's family, for features sitting on sea/wilderness (owner < 0).
   const repV = reps.map((r) => ({ id: r.id, v: ll2v(r.lon, r.lat) }));
@@ -325,7 +323,50 @@ export function nameWorld({ seed, owner, isLand, W, H, cities, rivers, lakes }) 
     f.properties.family = FAMILIES[fi].key;
   }
 
-  return { countryLabels };
+  // --- ocean labels: name each drowned continent's basin after the land it was ---
+  // In the inverted world a continent's footprint is now water, so a label dropped
+  // at that footprint names the new sea after the continent AND sits exactly where
+  // it lies today. We only place one where the spot is actually water — a normal,
+  // un-inverted world has land here, so the loop skips it and emits no ocean names.
+  const waterFracAround = (lon, lat) => {
+    if (!isLand) return 1;
+    let water = 0, total = 0;
+    for (let dy = -6; dy <= 6; dy += 3) {
+      for (let dx = -6; dx <= 6; dx += 3) {
+        total++;
+        if (!isLand[cellAt(lon + dx, lat + dy)]) water++;
+      }
+    }
+    return total ? water / total : 0;
+  };
+  const oceanFeatures = [];
+  for (const cont of CONTINENTS) {
+    if (waterFracAround(cont.lon, cont.lat) < 0.5) continue;
+    oceanFeatures.push({
+      type: "Feature",
+      properties: { name: `${cont.adj} Ocean`, continent: cont.key },
+      geometry: { type: "Point", coordinates: [cont.lon, cont.lat] },
+    });
+  }
+  const oceanLabels = { type: "FeatureCollection", features: oceanFeatures };
+
+  // --- continent labels: the risen oceans, named where each ocean is today ---
+  // The exact mirror of the ocean pass: today's ocean floor is the new land, so a
+  // label at an ocean's centre names the continent it became. Only placed where the
+  // spot is now land (mostly dry around the anchor) — water there means an
+  // un-inverted world, and the loop emits nothing.
+  const continentFeatures = [];
+  for (const cont of NEW_CONTINENTS) {
+    if (waterFracAround(cont.lon, cont.lat) > 0.5) continue;
+    continentFeatures.push({
+      type: "Feature",
+      properties: { name: cont.name, continent: cont.key },
+      geometry: { type: "Point", coordinates: [cont.lon, cont.lat] },
+    });
+  }
+  const continentLabels = { type: "FeatureCollection", features: continentFeatures };
+
+  return { countryLabels, oceanLabels, continentLabels };
 }
 
 // exported for any future debugging / styling per family

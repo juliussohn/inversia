@@ -44,7 +44,7 @@ export const LAYER_TOGGLES = [
   { key: "rivers", label: "Rivers", layers: ["rivers-line"] },
   { key: "lakes", label: "Lakes", layers: ["lakes-fill", "lakes-line"] },
   { key: "cities", label: "Cities", layers: ["cities-symbol"] },
-  { key: "labels", label: "Labels", layers: ["country-label", "cities-label", "rivers-label", "lakes-label"] },
+  { key: "labels", label: "Labels", layers: ["country-label", "cities-label", "rivers-label", "lakes-label", "ocean-label", "continent-label"] },
 ];
 
 // layerId → toggle key, so applyStyle can look up a layer's owning toggle.
@@ -89,6 +89,8 @@ export const STYLE_PRESETS = {
       "cities-label": { visibility: "visible", paint: { "text-opacity": 1 } },
       "rivers-label": { visibility: "visible", paint: { "text-opacity": 0.85 } },
       "lakes-label": { visibility: "visible", paint: { "text-opacity": 0.85 } },
+      "ocean-label": { visibility: "visible", paint: { "text-opacity": 0.72 } },
+      "continent-label": { visibility: "visible", paint: { "text-opacity": 0.5 } },
     },
   },
 
@@ -120,6 +122,8 @@ export const STYLE_PRESETS = {
       "cities-label": { visibility: "visible", paint: { "text-opacity": 1 } },
       "rivers-label": { visibility: "visible", paint: { "text-opacity": 0.95 } },
       "lakes-label": { visibility: "visible", paint: { "text-opacity": 0.95 } },
+      "ocean-label": { visibility: "visible", paint: { "text-opacity": 0.85 } },
+      "continent-label": { visibility: "visible", paint: { "text-opacity": 0.6 } },
     },
   },
 
@@ -155,6 +159,9 @@ export const STYLE_PRESETS = {
       },
       "rivers-label": { visibility: "none" },
       "lakes-label": { visibility: "none" },
+      // oceans & continents are the map's biggest features — keep them even when quiet
+      "ocean-label": { visibility: "visible", paint: { "text-opacity": 0.8 } },
+      "continent-label": { visibility: "visible", paint: { "text-opacity": 0.55 } },
     },
   },
 };
