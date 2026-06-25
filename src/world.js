@@ -112,17 +112,24 @@ let featReqId = 0;       // newest request issued
 let featAckId = 0;       // newest response applied (drop anything older / stale)
 let lastSig = "";        // params last sent — skip regen when nothing relevant changed
 
-// Only the water line, inversion, lake-size floor and river threshold change the
-// geometry. Relief, seed, future-phase knobs etc. leave the features untouched, so
-// we fingerprint just those and skip the worker round-trip when they haven't moved.
+// The water line, inversion, lake-size floor, river threshold AND the seed +
+// country knobs change the geometry; relief and other knobs leave it untouched.
+// We fingerprint just the geometry-affecting ones and skip the worker round-trip
+// when none of them moved.
 function featureSig() {
-  return `${recipe.world.water}|${recipe.world.invert ? 1 : 0}|${recipe.lakes.minSize}|${recipe.rivers.threshold}`;
+  const c = recipe.countries;
+  return [
+    recipe.world.water, recipe.world.invert ? 1 : 0,
+    recipe.lakes.minSize, recipe.rivers.threshold,
+    recipe.seed.seed, c.count, c.ambition, c.ridge, c.river, c.seaCross, c.wilderness,
+  ].join("|");
 }
 
 function requestFeatures() {
   const sig = featureSig();
   if (sig === lastSig) return;
   lastSig = sig;
+  const c = recipe.countries;
   worker.postMessage({
     type: "generate",
     id: ++featReqId,
@@ -130,6 +137,13 @@ function requestFeatures() {
     invert: recipe.world.invert,
     minSize: recipe.lakes.minSize,
     threshold: recipe.rivers.threshold,
+    seed: recipe.seed.seed,
+    count: c.count,
+    ambition: c.ambition,
+    ridge: c.ridge,
+    river: c.river,
+    seaCross: c.seaCross,
+    wilderness: c.wilderness,
   });
 }
 
@@ -149,6 +163,7 @@ worker.onmessage = (e) => {
   map.getSource("land")?.setData(msg.land);
   map.getSource("lakes")?.setData(msg.lakes);
   map.getSource("rivers")?.setData(msg.rivers);
+  if (msg.countries) map.getSource("countries")?.setData(msg.countries);
 };
 
 // Coast stroke + lake fill, styled to read as one world. The terrain shader
@@ -158,6 +173,7 @@ worker.onmessage = (e) => {
 // stays hairline on the globe and reads at regional zoom.
 function addFeatureLayers() {
   map.addSource("land", { type: "geojson", data: emptyFC() });
+  map.addSource("countries", { type: "geojson", data: emptyFC() });
   map.addSource("lakes", { type: "geojson", data: emptyFC() });
   map.addSource("coast", { type: "geojson", data: emptyFC() });
   map.addSource("rivers", { type: "geojson", data: emptyFC() });
@@ -171,6 +187,24 @@ function addFeatureLayers() {
     source: "land",
     layout: { visibility: "none" },
     paint: { "fill-color": "#ece6d6", "fill-opacity": 1 },
+  });
+
+  // Country territories (Phase 6) — drawn as outlines only, no fill. The border
+  // traces each country's edge; wilderness carries no feature so it simply has no
+  // outline. Sits above the land fill and below the lakes/coast/rivers so water
+  // features and the coastline always read on top. Width + opacity are the per-
+  // style levers (subtle over the terrain in Relief, bold in Political, hidden in
+  // Minimal — see styles.js).
+  map.addLayer({
+    id: "country-border",
+    type: "line",
+    source: "countries",
+    layout: { "line-join": "round" },
+    paint: {
+      "line-color": "#5b4a36",
+      "line-opacity": 0.8,
+      "line-width": ["interpolate", ["linear"], ["zoom"], 0, 0.5, 4, 1.3, 8, 2.4],
+    },
   });
 
   map.addLayer({
@@ -224,6 +258,7 @@ function addFeatureLayers() {
   const snap = { duration: 0 };
   for (const [layer, prop] of [
     ["land-fill", "fill-color-transition"], ["land-fill", "fill-opacity-transition"],
+    ["country-border", "line-color-transition"], ["country-border", "line-opacity-transition"],
     ["lakes-fill", "fill-color-transition"], ["lakes-fill", "fill-opacity-transition"],
     ["lakes-line", "line-color-transition"], ["lakes-line", "line-opacity-transition"],
     ["coast-line", "line-color-transition"], ["coast-line", "line-opacity-transition"],

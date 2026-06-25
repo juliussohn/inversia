@@ -10,12 +10,13 @@
  *                map; subtle coast, rivers, lakes painted over it.
  *    political — atlas look: terrain hidden, the ocean is a flat background, the
  *                land polygon (from Phase 4's coast contour) fills warm paper, and
- *                the coastline doubles as bold borders.
- *    minimal   — quiet two-tone: flat land/water, hairline coast, no rivers.
+ *                bold country outlines (Phase 6) trace the territories.
+ *    minimal   — quiet two-tone: flat land/water, hairline coast, no rivers, no
+ *                political boundaries.
  *
- *  (Country fills (Phase 6) and labels (Phase 9) aren't built yet, so the flat
- *  presets express their look with the layers that DO exist — land fill + coast.
- *  As those phases land they slot into these same preset objects.)
+ *  (Labels (Phase 9) aren't built yet, so the flat presets express their look with
+ *  the layers that DO exist — land fill + country fills + borders + coast. Labels
+ *  slot into these same preset objects when that phase lands.)
  *
  *  The active style is a VIEW preference, not part of the world recipe: it lives
  *  in the URL (`?…&style=`) and localStorage, so a shared link pins world + style
@@ -37,14 +38,18 @@ export const STYLE_PRESETS = {
     terrain: { visible: true },
     layers: {
       "land-fill": { visibility: "none" },
-      "coast-line": {
+      // interior country borders only (coastal edges aren't emitted) — subtle so
+      // they don't fight the relief. No coastline stroke: the terrain's own
+      // land/water colour break reads the shore, the way real relief maps do.
+      "country-border": {
         visibility: "visible",
         paint: {
-          "line-color": "#0b1a26",
-          "line-opacity": 0.85,
-          "line-width": ["interpolate", ["linear"], ["zoom"], 0, 0.4, 4, 0.9, 8, 1.6],
+          "line-color": "#1a2a16",
+          "line-opacity": 0.55,
+          "line-width": ["interpolate", ["linear"], ["zoom"], 0, 0.4, 4, 1.0, 8, 1.8],
         },
       },
+      "coast-line": { visibility: "none" },
       "lakes-fill": { visibility: "visible", paint: { "fill-color": "#3aa0c9", "fill-opacity": 0.45 } },
       "lakes-line": { visibility: "visible", paint: { "line-color": "#bfe6f2", "line-opacity": 0.5, "line-width": 0.6 } },
       "rivers-line": { visibility: "visible", paint: { "line-color": "#2b7fb8", "line-opacity": 0.9 } },
@@ -57,14 +62,18 @@ export const STYLE_PRESETS = {
     terrain: { visible: false },
     layers: {
       "land-fill": { visibility: "visible", paint: { "fill-color": "#ece6d6", "fill-opacity": 1 } },
-      "coast-line": {
+      // atlas look: bold country outlines over the paper land (no fills). Borders
+      // are interior-only now, so they trace state-vs-state frontiers but never the
+      // shore — the paper-land / blue-sea colour break is the coastline.
+      "country-border": {
         visibility: "visible",
         paint: {
-          "line-color": "#8a7f63",
-          "line-opacity": 0.9,
-          "line-width": ["interpolate", ["linear"], ["zoom"], 0, 0.6, 4, 1.6, 8, 3],
+          "line-color": "#5b4a36",
+          "line-opacity": 0.85,
+          "line-width": ["interpolate", ["linear"], ["zoom"], 0, 0.5, 4, 1.4, 8, 2.6],
         },
       },
+      "coast-line": { visibility: "none" },
       "lakes-fill": { visibility: "visible", paint: { "fill-color": "#aacbe0", "fill-opacity": 1 } },
       "lakes-line": { visibility: "visible", paint: { "line-color": "#8aa9bd", "line-opacity": 0.6, "line-width": 0.6 } },
       "rivers-line": { visibility: "visible", paint: { "line-color": "#6f9ec2", "line-opacity": 0.85 } },
@@ -77,6 +86,8 @@ export const STYLE_PRESETS = {
     terrain: { visible: false },
     layers: {
       "land-fill": { visibility: "visible", paint: { "fill-color": "#d4dade", "fill-opacity": 1 } },
+      // quiet two-tone: no political boundaries at all
+      "country-border": { visibility: "none" },
       "coast-line": {
         visibility: "visible",
         paint: {

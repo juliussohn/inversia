@@ -48,8 +48,12 @@ export const RECIPE_SCHEMA = {
   countries: {
     label: "Countries",
     fields: {
-      count: { type: "int", default: 64, min: 4, max: 256, step: 1, label: "Count" },
+      count: { type: "int", default: 40, min: 4, max: 256, step: 1, label: "Count" },
       ambition: { type: "float", default: 0.5, min: 0, max: 1, step: 0.05, label: "Size spread" },
+      ridge: { type: "float", default: 0.6, min: 0, max: 1, step: 0.05, label: "Ridge affinity" },
+      river: { type: "float", default: 0.6, min: 0, max: 1, step: 0.05, label: "River affinity" },
+      seaCross: { type: "float", default: 0.4, min: 0, max: 1, step: 0.05, label: "Sea-crossing cost" },
+      wilderness: { type: "float", default: 0.35, min: 0, max: 1, step: 0.05, label: "Wilderness" },
     },
   },
 

@@ -14,8 +14,10 @@
  *  or the river threshold reuses the heavy work and only re-filters/re-extracts.
  *
  *  Protocol:
- *    main → worker : { type:"generate", id, water, invert, minSize, threshold }
- *    worker → main : { type:"features", id, coast, lakes, rivers, stats }
+ *    main → worker : { type:"generate", id, water, invert, minSize, threshold,
+ *                      seed, count, ambition, ridge, river, seaCross, wilderness }
+ *    worker → main : { type:"features", id, coast, land, lakes, rivers,
+ *                      countries, stats }
  *                    { type:"error",    id, message }
  *  The `id` lets the main thread ignore stale responses when a newer request has
  *  already been issued (e.g. fast successive slider settles).
@@ -24,6 +26,7 @@
 import { loadField } from "./field.js";
 import { generate } from "./gen/coast.js";
 import { computeFlow, extractRivers } from "./gen/hydro.js";
+import { computeCountries } from "./gen/countries.js";
 
 let fieldPromise = null;
 const field = () => (fieldPromise ??= loadField());
@@ -31,6 +34,7 @@ const field = () => (fieldPromise ??= loadField());
 // Heavy-result caches, keyed by the params they actually depend on.
 let coastCache = { sig: "", coast: null, land: null, lakes: null, stats: null };
 let flowCache = { sig: "", flow: null };
+let countryCache = { sig: "", countries: null, stats: null };
 
 self.onmessage = async (e) => {
   const msg = e.data;
@@ -59,6 +63,27 @@ self.onmessage = async (e) => {
       threshold: msg.threshold,
     });
 
+    // countries grow over the field, taking the cached flow as a river-border
+    // affinity. They depend on water/invert (the field) plus the seed and every
+    // country knob, so they re-run only when one of those actually moves.
+    const countrySig =
+      `${msg.water}|${msg.invert ? 1 : 0}|${msg.seed}|${msg.count}|${msg.ambition}|` +
+      `${msg.ridge}|${msg.river}|${msg.seaCross}|${msg.wilderness}`;
+    if (countrySig !== countryCache.sig) {
+      const { countries, stats } = computeCountries(f, flowCache.flow, {
+        water: msg.water,
+        invert: msg.invert,
+        seed: msg.seed,
+        count: msg.count,
+        ambition: msg.ambition,
+        ridge: msg.ridge,
+        river: msg.river,
+        seaCross: msg.seaCross,
+        wilderness: msg.wilderness,
+      });
+      countryCache = { sig: countrySig, countries, stats };
+    }
+
     self.postMessage({
       type: "features",
       id: msg.id,
@@ -66,7 +91,8 @@ self.onmessage = async (e) => {
       land: coastCache.land,
       lakes: coastCache.lakes,
       rivers,
-      stats: { ...coastCache.stats, ...riverStats },
+      countries: countryCache.countries,
+      stats: { ...coastCache.stats, ...riverStats, ...countryCache.stats },
     });
   } catch (err) {
     self.postMessage({ type: "error", id: msg.id, message: String((err && err.message) || err) });

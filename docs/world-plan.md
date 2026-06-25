@@ -152,7 +152,7 @@ with accumulation; regenerate correctly when water level settles.
 
 ---
 
-## Phase 6 — Countries (organic growth, natural borders)
+## Phase 6 — Countries (organic growth, natural borders) ✅ SHIPPED
 
 **Why now:** The explicit pain point. Needs coast (Phase 4) + rivers (Phase 5) as
 border affinities. The big realism upgrade over today's equal Voronoi.
@@ -168,6 +168,16 @@ border affinities. The big realism upgrade over today's equal Voronoi.
   - Vectorize regions into closed polygons, clip to coastline, subtract lake
     holes. Stable per-country IDs.
 - MapLibre fill + border-line layers, colored per country.
+
+**Shipped differently (note for later phases):** countries render as **borders
+only, no fills**, and the border layer draws **only interior frontiers** — land
+edges between two different owners (state↔state or state↔wilderness). Edges facing
+the sea are not drawn: real political maps don't ink a line along the coast, and
+doing so doubled the coastline stroke. Borders are built as **one global network
+emitted as a single MultiLineString feature** (shared frontiers traced once, then
+Douglas–Peucker-simplified + Chaikin-smoothed off the cell grid so they flow at any
+angle). Consequence: there are **no per-country features or `capital`/`id`
+properties** on the `countries` source anymore — see the Phase 9 note below.
 
 **Out of scope:** capitals-as-cities (Phase 7), names, manual recolor.
 
@@ -237,6 +247,13 @@ start, so this is mostly additive.
   deterministic names. Assign each region a **language family** so neighbors share
   phonetic style; derive river/lake/city names from their owning region.
 - Write `name` onto feature properties; point label layers at them.
+
+**Note — country labels need their own source:** the `countries` source is now a
+single borders-only line feature with no per-country properties (see Phase 6 note),
+so country names can't be attached to it. Add a dedicated **country label-point
+source** (one point per country at a representative interior point — e.g. its
+capital from Phase 7, or a pole-of-inaccessibility) and write `name` there. Rivers/
+lakes/cities still carry their own per-feature properties for labeling as planned.
 
 **Out of scope:** LLM naming (explicitly not chosen).
 
