@@ -25,7 +25,7 @@ import { createTerrainLayer } from "./world/terrain-layer.js";
 import {
   STYLE_PRESETS, DEFAULT_STYLE, applyStyle, readStyleId, persistStyle,
   createStylePicker, normalizeStyle,
-  readLayerVisibility, persistLayerVisibility,
+  readLayerVisibility, persistLayerVisibility, showReliefPreview,
 } from "./world/styles.js";
 import { loadWorldStat, landFraction } from "./terrain.js";
 import { loadState, saveState, downloadFile, pickFile } from "./world/persist.js";
@@ -135,6 +135,72 @@ let featReqId = 0;       // newest request issued
 let featAckId = 0;       // newest response applied (drop anything older / stale)
 let lastSig = "";        // params last sent — skip regen when nothing relevant changed
 
+// ---- generation loader ---------------------------------------------------
+// A small overlay that narrates what the worker is doing, stage by stage. The
+// worker posts a `progress` step before each pass (see worker.js); we map those
+// keys to friendly lines. Shown when a request is dispatched, hidden when its
+// features land.
+const STAGE_LABELS = {
+  start: "Generating world…",
+  coast: "Tracing coastlines…",
+  rivers: "Carving rivers…",
+  countries: "Drawing borders…",
+  cities: "Founding cities…",
+  naming: "Naming places…",
+};
+let loaderEl = null;
+function loader() {
+  if (!loaderEl) {
+    loaderEl = document.createElement("div");
+    loaderEl.id = "gen-loader";
+    loaderEl.innerHTML = '<span class="gen-spinner"></span><span class="gen-text"></span>';
+    document.body.appendChild(loaderEl);
+  }
+  return loaderEl;
+}
+function showLoader(stage = "start") {
+  const el = loader();
+  el.querySelector(".gen-text").textContent = STAGE_LABELS[stage] || STAGE_LABELS.start;
+  el.classList.add("show");
+}
+function hideLoader() {
+  loaderEl?.classList.remove("show");
+}
+
+// ---- relief preview during regeneration ----------------------------------
+// Whenever the world is regenerating, every generated layer (coast/rivers/
+// borders/cities/labels) is stale, so we drop to the terrain-only relief preview
+// — the shader is always live — and hold there until the FRESH features have
+// actually rendered, then restore the target style. Revealing on the map's
+// `idle` (not the instant `setData` returns) is what stops the previous borders
+// flashing back for a frame before the new geometry finishes parsing.
+let previewActive = false;
+function enterPreview() {
+  if (baked || previewActive) return;    // frozen world has no live terrain shader
+  previewActive = true;
+  showReliefPreview(map, terrain.id);
+}
+function restorePreview() {
+  previewActive = false;
+  applyStyle(map, terrain.id, currentStyle, layerVisibility);
+}
+// Reveal the refreshed layers only once they've rendered. `setData` parses on a
+// worker, so the layer would briefly show its OLD data if we un-hid it right
+// away; waiting for `idle` guarantees the new geometry is on screen first. The
+// timeout is a safety net in case no repaint is queued and `idle` never fires.
+// Both paths bail if a newer regen is already in flight (featAckId !== featReqId)
+// — we stay in the preview until that latest one lands instead.
+function revealWhenRendered() {
+  const finish = () => {
+    if (previewActive && featAckId === featReqId) {
+      restorePreview();
+      hideLoader();
+    }
+  };
+  map.once("idle", finish);
+  setTimeout(finish, 800);
+}
+
 // The water line, inversion, lake-size floor, river threshold AND the seed +
 // country knobs change the geometry; relief and other knobs leave it untouched.
 // We fingerprint just the geometry-affecting ones and skip the worker round-trip
@@ -155,6 +221,8 @@ function requestFeatures() {
   const sig = featureSig();
   if (sig === lastSig) return;
   lastSig = sig;
+  showLoader();                   // narrated stage-by-stage as the worker reports in
+  enterPreview();                 // hold the relief preview until the fresh layers render
   const c = recipe.countries;
   worker.postMessage({
     type: "generate",
@@ -183,7 +251,14 @@ function scheduleFeatures() {
 
 worker.onmessage = (e) => {
   const msg = e.data;
-  if (msg.type === "error") { console.warn("[features] worker error:", msg.message); return; }
+  if (msg.type === "error") {
+    console.warn("[features] worker error:", msg.message);
+    hideLoader();
+    if (previewActive) restorePreview();   // don't strand the world on the relief preview
+    return;
+  }
+  // Stage narration for the loader — ignore steps from a superseded request.
+  if (msg.type === "progress") { if (msg.id >= featReqId) showLoader(msg.stage); return; }
   if (msg.type !== "features") return;
   if (msg.id < featAckId) return;          // a newer response already landed
   featAckId = msg.id;
@@ -193,6 +268,12 @@ worker.onmessage = (e) => {
     countries: msg.countries, cities: msg.cities, countryLabels: msg.countryLabels,
   };
   applyFeatures(payload);
+
+  // Generation done. If we're holding the relief preview, keep it up until the
+  // just-set geometry has actually rendered, then restore the style + drop the
+  // loader (see revealWhenRendered). Otherwise just drop the loader.
+  if (previewActive) revealWhenRendered();
+  else hideLoader();
 
   // Keep the live GeoJSON around so a bundle can freeze exactly what's on screen,
   // and release anyone awaiting the first generation (e.g. an early bake click).
@@ -517,7 +598,9 @@ function syncHash() {
 // world; it only re-presents it, persists the choice, and refreshes the link.
 function setMapStyle(id) {
   currentStyle = normalizeStyle(id);
-  applyStyle(map, terrain.id, currentStyle, layerVisibility);
+  // While the relief preview is up (a regen is in flight) don't reveal the stale
+  // layers — the pending reveal applies the now-current style once they're fresh.
+  if (!previewActive) applyStyle(map, terrain.id, currentStyle, layerVisibility);
   applyBackground();
   persistStyle(currentStyle);
   picker.setActive(currentStyle);
@@ -528,7 +611,9 @@ function setMapStyle(id) {
 // Re-present the world under the current style with the new layer toggles, and
 // remember the choice. Never touches the recipe or the world geometry.
 function setLayerVisibility(vis) {
-  applyStyle(map, terrain.id, currentStyle, vis);
+  // Same as setMapStyle: defer to the pending reveal if we're mid-regen so the
+  // preview isn't broken by un-hiding stale layers.
+  if (!previewActive) applyStyle(map, terrain.id, currentStyle, vis);
   persistLayerVisibility(vis);
   scheduleAutosave();
 }
@@ -548,7 +633,13 @@ function scheduleAutosave() {
 const panel = createPanel({
   container: document.getElementById("panel"),
   recipe,
-  onChange: () => {
+  onChange: (_recipe, ev) => {
+    // Dragging the water slider should drop to the live relief preview IMMEDIATELY
+    // (the terrain shader reacts to the water uniform every frame), rather than
+    // waiting for the post-settle regen to enter preview — so the sea visibly
+    // rises/falls with no stale layers over it. Other edits enter preview when
+    // their regeneration dispatches (see requestFeatures). Idempotent either way.
+    if (ev?.target?.key === "water") enterPreview();
     applyRecipeToMap();
     syncHash();
     scheduleAutosave();

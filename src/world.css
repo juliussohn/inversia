@@ -114,3 +114,51 @@ body {
 #toast.show {
   opacity: 1;
 }
+
+/* Generation loader — narrates the worker's stage-by-stage progress (coastlines,
+   rivers, borders, cities, naming) while the world regenerates. Top-centre so it
+   doesn't collide with the bottom toast or the panel. */
+#gen-loader {
+  position: fixed;
+  top: 16px;
+  left: 50%;
+  transform: translateX(-50%) translateY(-6px);
+  z-index: 30;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 16px;
+  border-radius: 999px;
+  font-size: 13px;
+  letter-spacing: 0.02em;
+  color: #eaf1fb;
+  background: rgba(20, 28, 42, 0.92);
+  box-shadow: 0 2px 12px rgba(0, 0, 0, 0.4);
+  backdrop-filter: blur(6px);
+  opacity: 0;
+  transition: opacity 0.18s ease, transform 0.18s ease;
+  pointer-events: none;
+}
+
+#gen-loader.show {
+  opacity: 1;
+  transform: translateX(-50%) translateY(0);
+}
+
+#gen-loader .gen-spinner {
+  width: 14px;
+  height: 14px;
+  border-radius: 50%;
+  border: 2px solid rgba(207, 224, 245, 0.3);
+  border-top-color: #cfe0f5;
+  animation: gen-spin 0.7s linear infinite;
+  flex: none;
+}
+
+@keyframes gen-spin {
+  to { transform: rotate(360deg); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  #gen-loader .gen-spinner { animation-duration: 1.6s; }
+}

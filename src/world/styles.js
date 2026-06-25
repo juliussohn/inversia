@@ -173,6 +173,26 @@ function setVisible(map, layerId, visible) {
   } catch { /* layer not ready yet */ }
 }
 
+// Every generated vector layer id, derived from the toggle groups (land fill,
+// borders, coast, rivers, lakes, cities, labels). The single source of truth for
+// "all the layers that sit on top of the terrain".
+export const FEATURE_LAYER_IDS = LAYER_TOGGLES.flatMap((t) => t.layers ?? []);
+
+/**
+ * Relief-preview override, held while the world is regenerating: show only the
+ * live terrain shader (it reads invert/water/relief every frame, so it always
+ * reflects the current recipe) and hide every generated vector layer, whose
+ * coastlines / rivers / borders are now stale against the in-flight world.
+ * Restore the normal presentation by calling `applyStyle` once regeneration lands.
+ *
+ * @param {import("maplibre-gl").Map} map
+ * @param {string} terrainId  id of the terrain custom layer
+ */
+export function showReliefPreview(map, terrainId) {
+  setVisible(map, terrainId, true);
+  for (const id of FEATURE_LAYER_IDS) setVisible(map, id, false);
+}
+
 /**
  * Apply a preset by DIFFING it onto the one persistent style. Walks the preset
  * and sets visibility + paint for the terrain custom layer and every vector

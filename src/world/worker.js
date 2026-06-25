@@ -43,12 +43,20 @@ let cityCache = { sig: "", cities: null, stats: null };
 self.onmessage = async (e) => {
   const msg = e.data;
   if (!msg || msg.type !== "generate") return;
+  // Narrate which pass is about to run so the main thread can show a stage-by-
+  // stage loader. We post the label BEFORE the (synchronous, blocking) pass, so
+  // the worker thread is busy on that stage while the message displays — the
+  // timing lines up on its own. Only the passes that actually execute emit a
+  // step (the cache guards below skip the unchanged ones), so the loader shows
+  // exactly what's being recomputed.
+  const step = (stage) => self.postMessage({ type: "progress", id: msg.id, stage });
   try {
     const f = await field();
 
     // coast + lakes depend on water / invert / lake-size floor
     const coastSig = `${msg.water}|${msg.invert ? 1 : 0}|${msg.minSize}`;
     if (coastSig !== coastCache.sig) {
+      step("coast");
       const { coast, land, lakes, stats } = generate(f, {
         water: msg.water,
         invert: msg.invert,
@@ -61,6 +69,7 @@ self.onmessage = async (e) => {
     // cheap post-filter, so a threshold-only change reuses the cached flow.
     const flowSig = `${msg.water}|${msg.invert ? 1 : 0}`;
     if (flowSig !== flowCache.sig) {
+      step("rivers");
       flowCache = { sig: flowSig, flow: computeFlow(f, { water: msg.water, invert: msg.invert }) };
     }
     const { rivers, stats: riverStats } = extractRivers(flowCache.flow, {
@@ -74,6 +83,7 @@ self.onmessage = async (e) => {
       `${msg.water}|${msg.invert ? 1 : 0}|${msg.seed}|${msg.count}|${msg.areaSkew}|${msg.ambition}|` +
       `${msg.ridge}|${msg.river}|${msg.seaCross}`;
     if (countrySig !== countryCache.sig) {
+      step("countries");
       const { countries, owner, isLand, stats } = computeCountries(f, flowCache.flow, {
         water: msg.water,
         invert: msg.invert,
@@ -93,6 +103,7 @@ self.onmessage = async (e) => {
     // countrySig) plus their own density/spacing knobs — nothing else.
     const citySig = `${countrySig}|${msg.density}|${msg.spacing}`;
     if (citySig !== cityCache.sig) {
+      step("cities");
       const { cities, stats } = computeCities(
         f, flowCache.flow,
         { owner: countryCache.owner, isLand: countryCache.isLand },
@@ -106,6 +117,7 @@ self.onmessage = async (e) => {
     // fresh country-label point layer. Rivers are re-extracted every call, so we
     // re-name unconditionally rather than caching — it's a cheap O(N) pass next to
     // the generation work above, and keeps the freshly-extracted rivers named.
+    step("naming");
     const { countryLabels } = nameWorld({
       seed: msg.seed,
       owner: countryCache.owner,
