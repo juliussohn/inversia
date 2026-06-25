@@ -56,6 +56,8 @@
  *  contouring (a hairline mid-Pacific gap), while flood-fill and growth DO wrap.
  * ------------------------------------------------------------------ */
 
+import { clamp01, emptyFC, bfsDistance, stitch } from "./grid.js";
+
 // A major river counts as a border-worthy river once its drained area clears this
 // (km²). Independent of the recipe's display threshold so borders follow trunk
 // rivers regardless of how thin the user has styled the visible network.
@@ -255,36 +257,6 @@ function smoothChain(pts, closed) {
   return out;
 }
 
-// Stitch undirected segments into rings (degree-2 interior vertices). Open chains
-// (touching a pole or the skipped seam) are walked first from their endpoints.
-function stitch(sa, sb, vlon, vlat) {
-  const nv = vlon.length;
-  const adj = Array.from({ length: nv }, () => []);
-  for (let i = 0; i < sa.length; i++) { adj[sa[i]].push(i); adj[sb[i]].push(i); }
-  const used = new Uint8Array(sa.length);
-  const other = (seg, v) => (sa[seg] === v ? sb[seg] : sa[seg]);
-
-  function walk(startSeg, startV) {
-    const ids = [startV];
-    let v = startV, seg = startSeg;
-    while (seg !== -1 && !used[seg]) {
-      used[seg] = 1;
-      v = other(seg, v); ids.push(v);
-      seg = -1;
-      for (const s of adj[v]) if (!used[s]) { seg = s; break; }
-    }
-    const ring = new Array(ids.length);
-    for (let i = 0; i < ids.length; i++) ring[i] = [vlon[ids[i]], vlat[ids[i]]];
-    ring.closed = ids[0] === ids[ids.length - 1];
-    return ring;
-  }
-
-  const rings = [];
-  for (let v = 0; v < nv; v++) if (adj[v].length === 1 && !used[adj[v][0]]) rings.push(walk(adj[v][0], v));
-  for (let i = 0; i < sa.length; i++) if (!used[i]) rings.push(walk(i, sa[i]));
-  return rings;
-}
-
 // ---- the pass -------------------------------------------------------------
 
 /**
@@ -307,6 +279,14 @@ export function computeCountries(field, flow, opts) {
   const { water, invert, seed, count } = opts;
   const level = water;
 
+  // Resolve the 0..1 placement knobs onto their constants; 0.5 reproduces the
+  // hand-tuned baseline (MIN_AREA / SEA_SPAN_MAX / RIVER_BORDER_KM2 above), and a
+  // missing value (old world) also falls back to 0.5.
+  const norm = (v) => (Number.isFinite(v) ? clamp01(v) : 0.5);
+  const minAreaCells = MIN_AREA * Math.pow(8, 2 * norm(opts.minArea) - 1);            // 0.5 → 12; lower = micro-states
+  const seaReachCells = Math.round(SEA_SPAN_MAX * Math.pow(4, 2 * norm(opts.seaReach) - 1)); // 0.5 → 8; higher = island empires
+  const riverBorderKm2 = RIVER_BORDER_KM2 * Math.pow(10, 0.5 - norm(opts.riverBorders));     // 0.5 → 60k; higher knob = more river borders
+
   // eff = the surface the shader thresholds. Land where eff > level.
   const eff = new Float32Array(N);
   if (invert) for (let i = 0; i < N; i++) eff[i] = -elev[i];
@@ -321,7 +301,7 @@ export function computeCountries(field, flow, opts) {
   // riverMask: trunk-river cells (border affinity + a habitability draw).
   const slopeN = new Float32Array(N); // 0..1
   const riverMask = new Uint8Array(N);
-  if (flow && flow.acc) for (let i = 0; i < N; i++) if (isLand[i] && flow.acc[i] >= RIVER_BORDER_KM2) riverMask[i] = 1;
+  if (flow && flow.acc) for (let i = 0; i < N; i++) if (isLand[i] && flow.acc[i] >= riverBorderKm2) riverMask[i] = 1;
 
   for (let y = 0; y < H; y++) {
     for (let x = 0; x < W; x++) {
@@ -389,7 +369,7 @@ export function computeCountries(field, flow, opts) {
   // dense. See allocateCapitals.
   const rand = mulberry32((seed >>> 0) ^ 0x9e3779b9);
   const areaSkew = clampRange(opts.areaSkew, 0.3, 1);
-  const { caps, capSpread } = allocateCapitals({ N, W, H, isLand, landId, habit, count, areaSkew, rand });
+  const { caps, capSpread } = allocateCapitals({ N, W, H, isLand, landId, habit, count, areaSkew, rand, minArea: minAreaCells });
   const nCaps = caps.length;
   if (!nCaps) return { countries: emptyFC(), owner: new Int32Array(N).fill(-1), isLand, stats: { countries: 0 } };
 
@@ -410,6 +390,7 @@ export function computeCountries(field, flow, opts) {
     ridgeW: clamp01(opts.ridge) * 6,
     riverW: clamp01(opts.river) * 9,
     seaCost: 5 + clamp01(opts.seaCross) * 45,
+    seaReach: seaReachCells,
   });
   fillOrphans({ N, W, H, isLand, owner });
 
@@ -450,35 +431,7 @@ export function computeCountries(field, flow, opts) {
 }
 
 // ---- helpers --------------------------------------------------------------
-const emptyFC = () => ({ type: "FeatureCollection", features: [] });
-const clamp01 = (v) => (v < 0 ? 0 : v > 1 ? 1 : v);
 const clampRange = (v, lo, hi) => (!Number.isFinite(v) ? lo : v < lo ? lo : v > hi ? hi : v);
-
-// Multi-source BFS in cell steps. `isSource(c)` seeds distance 0; expansion is
-// confined to cells where `passable(c)` holds. Returns Float64 distances (cells),
-// Infinity where unreached. x wraps, y clamps — same topology as the floods.
-function bfsDistance(N, W, H, isSource, passable) {
-  const dist = new Float64Array(N).fill(Infinity);
-  const q = new Int32Array(N);
-  let head = 0, tail = 0;
-  for (let c = 0; c < N; c++) if (isSource(c)) { dist[c] = 0; q[tail++] = c; }
-  while (head < tail) {
-    const c = q[head++];
-    const x = c % W, y = (c / W) | 0;
-    const d = dist[c] + 1;
-    const nbr = [
-      y > 0 ? c - W : -1,
-      y < H - 1 ? c + W : -1,
-      x === 0 ? c + W - 1 : c - 1,
-      x === W - 1 ? c - W + 1 : c + 1,
-    ];
-    for (const n of nbr) {
-      if (n < 0 || dist[n] !== Infinity || !passable(n)) continue;
-      dist[n] = d; q[tail++] = n;
-    }
-  }
-  return dist;
-}
 
 // Allocate capitals PER landmass, then place them within each mass.
 //
@@ -493,7 +446,7 @@ function bfsDistance(N, W, H, isSource, passable) {
 // neighbour. All areas and spacings are cos-latitude-weighted so the converging
 // polar grid doesn't over-allocate. Returns { caps, capSpread } — capital cell
 // indices (index = owner id) and each capital's size-graded variance budget.
-function allocateCapitals({ N, W, H, isLand, landId, habit, count, areaSkew, rand }) {
+function allocateCapitals({ N, W, H, isLand, landId, habit, count, areaSkew, rand, minArea }) {
   let nLand = 0;
   for (let c = 0; c < N; c++) if (landId[c] + 1 > nLand) nLand = landId[c] + 1;
   if (!nLand) return { caps: [], capSpread: [] };
@@ -514,7 +467,7 @@ function allocateCapitals({ N, W, H, isLand, landId, habit, count, areaSkew, ran
 
   // eligible masses, largest first (so the best-effort floor favours big land)
   const eligible = [];
-  for (let m = 0; m < nLand; m++) if (area[m] >= MIN_AREA) eligible.push(m);
+  for (let m = 0; m < nLand; m++) if (area[m] >= minArea) eligible.push(m);
   if (!eligible.length) return { caps: [], capSpread: [] };
   eligible.sort((a, b) => area[b] - area[a]);
 
@@ -634,7 +587,7 @@ function fillOrphans({ N, W, H, isLand, owner }) {
 // states spread further. Crossing water is allowed for up to SEA_SPAN_MAX cells
 // at `seaCost` each. There is no cost cutoff: fronts run until they meet, so all
 // reachable land is claimed (any unreachable speck is handled by fillOrphans).
-function growTerritory({ N, W, H, isLand, slopeN, riverMask, caps, ambition, ridgeW, riverW, seaCost }) {
+function growTerritory({ N, W, H, isLand, slopeN, riverMask, caps, ambition, ridgeW, riverW, seaCost, seaReach }) {
   const dist = new Float64Array(N).fill(Infinity);
   const owner = new Int32Array(N).fill(-1);
   const srun = new Int16Array(N); // consecutive sea cells on the best path here
@@ -673,7 +626,7 @@ function growTerritory({ N, W, H, isLand, slopeN, riverMask, caps, ambition, rid
         } else {
           // onto water: only as a short, expensive strait crossing
           nrun = (water ? wrun : 0) + 1;
-          if (nrun > SEA_SPAN_MAX) continue;
+          if (nrun > seaReach) continue;
           step = base * seaCost;
         }
 

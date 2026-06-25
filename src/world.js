@@ -19,9 +19,10 @@ import maplibregl from "maplibre-gl";
 import "maplibre-gl/dist/maplibre-gl.css";
 import "./world.css";
 
-import { decodeHash, encodeHash, eachField, fromJSON, toJSON } from "./world/recipe.js";
+import { decodeHash, encodeHash, eachField, fromJSON, toJSON, CLIMATE_FIELDS } from "./world/recipe.js";
 import { createPanel } from "./world/panel.js";
 import { createTerrainLayer } from "./world/terrain-layer.js";
+import { BIOME_PALETTE } from "./world/biome-palette.js";
 import {
   STYLE_PRESETS, DEFAULT_STYLE, applyStyle, readStyleId, persistStyle,
   createStylePicker, normalizeStyle,
@@ -146,6 +147,7 @@ const STAGE_LABELS = {
   rivers: "Carving rivers…",
   countries: "Drawing borders…",
   cities: "Founding cities…",
+  biome: "Painting climates…",
   naming: "Naming places…",
 };
 let loaderEl = null;
@@ -182,7 +184,7 @@ function enterPreview() {
 }
 function restorePreview() {
   previewActive = false;
-  applyStyle(map, terrain.id, currentStyle, layerVisibility);
+  applyStyle(map, terrain, currentStyle, layerVisibility);
 }
 // Reveal the refreshed layers only once they've rendered. `setData` parses on a
 // worker, so the layer would briefly show its OLD data if we un-hid it right
@@ -208,11 +210,14 @@ function revealWhenRendered() {
 function featureSig() {
   const c = recipe.countries;
   const ci = recipe.cities;
+  const cl = recipe.climate;
   return [
     recipe.world.water, recipe.world.invert ? 1 : 0,
     recipe.lakes.minSize, recipe.rivers.threshold,
     recipe.seed.seed, c.count, c.areaSkew, c.ambition, c.ridge, c.river, c.seaCross,
-    ci.density, ci.spacing,
+    c.minArea, c.seaReach, c.riverBorders,
+    ci.density, ci.spacing, ci.coastPull, ci.riverPull, ci.lowland, ci.bigCityShare,
+    ...CLIMATE_FIELDS.map((k) => cl[k]),
   ].join("|");
 }
 
@@ -238,8 +243,16 @@ function requestFeatures() {
     ridge: c.ridge,
     river: c.river,
     seaCross: c.seaCross,
+    minArea: c.minArea,
+    seaReach: c.seaReach,
+    riverBorders: c.riverBorders,
     density: recipe.cities.density,
     spacing: recipe.cities.spacing,
+    coastPull: recipe.cities.coastPull,
+    riverPull: recipe.cities.riverPull,
+    lowland: recipe.cities.lowland,
+    bigCityShare: recipe.cities.bigCityShare,
+    ...Object.fromEntries(CLIMATE_FIELDS.map((k) => [k, recipe.climate[k]])),
   });
 }
 
@@ -267,6 +280,7 @@ worker.onmessage = (e) => {
     coast: msg.coast, land: msg.land, lakes: msg.lakes, rivers: msg.rivers,
     countries: msg.countries, cities: msg.cities, countryLabels: msg.countryLabels,
     oceanLabels: msg.oceanLabels, continentLabels: msg.continentLabels,
+    biomes: msg.biomes,
   };
   applyFeatures(payload);
 
@@ -290,6 +304,7 @@ function applyFeatures(p) {
   const empty = emptyFC();
   map.getSource("coast")?.setData(p.coast || empty);
   map.getSource("land")?.setData(p.land || empty);
+  map.getSource("biome")?.setData(p.biomes || empty);
   map.getSource("countries")?.setData(p.countries || empty);
   map.getSource("lakes")?.setData(p.lakes || empty);
   map.getSource("rivers")?.setData(p.rivers || empty);
@@ -314,6 +329,7 @@ function ensureFeatures() {
 // stays hairline on the globe and reads at regional zoom.
 function addFeatureLayers() {
   map.addSource("land", { type: "geojson", data: emptyFC() });
+  map.addSource("biome", { type: "geojson", data: emptyFC() });
   map.addSource("countries", { type: "geojson", data: emptyFC() });
   map.addSource("lakes", { type: "geojson", data: emptyFC() });
   map.addSource("coast", { type: "geojson", data: emptyFC() });
@@ -338,6 +354,27 @@ function addFeatureLayers() {
     source: "land",
     layout: { visibility: "none" },
     paint: { "fill-color": "#ece6d6", "fill-opacity": 1 },
+  });
+
+  // Land-cover zones (the "Natural" style) — crisp flat tints, one fill per biome
+  // class, traced into vector polygons by the worker. Sits just above the terrain
+  // (which it renders as a neutral relief beneath) and below borders/water/labels.
+  // A slight transparency lets the hillshade read through, so the terrain still
+  // shows. Hidden in every other style. Ids + colours come from BIOME_PALETTE, the
+  // shared contract the worker classifies against (src/world/biome-palette.js).
+  map.addLayer({
+    id: "biome-fill",
+    type: "fill",
+    source: "biome",
+    layout: { visibility: "none" },
+    paint: {
+      "fill-color": [
+        "match", ["get", "biome"],
+        ...BIOME_PALETTE.flatMap(([id, color]) => [id, color]),
+        "#cdd3c6", // fallback (tundra) for any unclassified cell
+      ],
+      "fill-opacity": 0.88,
+    },
   });
 
   // Country territories (Phase 6) — drawn as outlines only, no fill. The border
@@ -698,7 +735,7 @@ function setMapStyle(id) {
   currentStyle = normalizeStyle(id);
   // While the relief preview is up (a regen is in flight) don't reveal the stale
   // layers — the pending reveal applies the now-current style once they're fresh.
-  if (!previewActive) applyStyle(map, terrain.id, currentStyle, layerVisibility);
+  if (!previewActive) applyStyle(map, terrain, currentStyle, layerVisibility);
   applyBackground();
   persistStyle(currentStyle);
   picker.setActive(currentStyle);
@@ -711,7 +748,7 @@ function setMapStyle(id) {
 function setLayerVisibility(vis) {
   // Same as setMapStyle: defer to the pending reveal if we're mid-regen so the
   // preview isn't broken by un-hiding stale layers.
-  if (!previewActive) applyStyle(map, terrain.id, currentStyle, vis);
+  if (!previewActive) applyStyle(map, terrain, currentStyle, vis);
   persistLayerVisibility(vis);
   scheduleAutosave();
 }
@@ -854,7 +891,7 @@ function enterBakedMode(bundle) {
   // honour the saved view preference (style + toggles), then re-present.
   if (bundle.view?.layerVisibility) Object.assign(layerVisibility, bundle.view.layerVisibility);
   if (bundle.view?.style) currentStyle = normalizeStyle(bundle.view.style);
-  applyStyle(map, terrain.id, currentStyle, layerVisibility);
+  applyStyle(map, terrain, currentStyle, layerVisibility);
   applyBackground();
   picker.setActive(currentStyle);
   syncHash();
@@ -908,7 +945,7 @@ map.on("load", () => {
   applyRecipeToMap();
   map.addLayer(terrain);  // above the placeholder background
   addFeatureLayers();     // land + coast + lakes + rivers sit on top of the terrain
-  applyStyle(map, terrain.id, currentStyle, layerVisibility); // resolved style + toggles from the start
+  applyStyle(map, terrain, currentStyle, layerVisibility); // resolved style + toggles from the start
   applyBackground();
   requestFeatures();      // first generation (bypasses the settle debounce)
 });

@@ -41,6 +41,8 @@
  *  layers there is no antimeridian seam to split.
  * ------------------------------------------------------------------ */
 
+import { clamp01, emptyFC, bfsDistance } from "./grid.js";
+
 // Slope (metres of relief to the steepest neighbour) that saturates the flatness
 // penalty — matches countries.js so "mountainous" means the same thing here.
 const SLOPE_SCALE = 900;
@@ -71,6 +73,16 @@ export function computeCities(field, flow, country, opts) {
   const N = W * H;
   const { water, invert, density, spacing } = opts;
   const level = water;
+
+  // Resolve the 0..1 placement knobs onto the suitability weights; 0.5 reproduces
+  // the hand-tuned baseline, and a missing value (old world) also falls back to 0.5.
+  const norm = (v) => (Number.isFinite(v) ? clamp01(v) : 0.5);
+  const coastW = 1.6 * norm(opts.coastPull);                       // 0.5 → 0.8 (draw toward the sea)
+  const riverW = 1.4 * norm(opts.riverPull);                       // 0.5 → 0.7 (draw toward rivers)
+  const lowDecay = 1800 * Math.pow(4, 0.5 - norm(opts.lowland));   // 0.5 → 1800 m; higher = mountains repel harder
+  const bigShare = norm(opts.bigCityShare);
+  const metroCut = 0.12 * bigShare;                                // 0.5 → 0.06 (top fraction that are metropolises)
+  const cityCut = 0.60 * bigShare;                                 // 0.5 → 0.30 (fraction that are at least cities)
 
   // Prefer the ownership-derived land mask (identical thresholding to the growth
   // pass) so cities never land a pixel off the territory they're assigned to.
@@ -139,11 +151,11 @@ export function computeCities(field, flow, country, opts) {
     if (!isLand[i]) continue;
     const flat = 1 / (1 + slopeN[i] * 4);
     const hkm = Math.max(0, eff[i] - level);
-    const lowland = Math.exp(-hkm / 1800);          // high ground less habitable
+    const lowland = Math.exp(-hkm / lowDecay);       // high ground less habitable
     const coast = Math.exp(-distWater[i] / 6);
     const river = distRiver[i] === Infinity ? 0 : Math.exp(-distRiver[i] / 5);
     const conf = distConf[i] === Infinity ? 0 : Math.exp(-distConf[i] / 4);
-    const s = (0.1 + flat * (0.35 + 0.8 * coast + 0.7 * river + 0.9 * conf)) * (0.45 + 0.55 * lowland);
+    const s = (0.1 + flat * (0.35 + coastW * coast + riverW * river + 0.9 * conf)) * (0.45 + 0.55 * lowland);
     score[i] = s;
     if (s > smax) smax = s;
   }
@@ -240,7 +252,7 @@ export function computeCities(field, flow, country, opts) {
     rank[i] = r + 1;
     if (capSet.has(i)) { tier[i] = "capital"; continue; }
     const frac = nNonCap ? nonCapSeen / nNonCap : 0;
-    tier[i] = frac < 0.06 ? "metropolis" : frac < 0.30 ? "city" : "town";
+    tier[i] = frac < metroCut ? "metropolis" : frac < cityCut ? "city" : "town";
     nonCapSeen++;
   }
 
@@ -268,8 +280,6 @@ export function computeCities(field, flow, country, opts) {
 }
 
 // ---- helpers --------------------------------------------------------------
-const emptyFC = () => ({ type: "FeatureCollection", features: [] });
-const clamp01 = (v) => (v < 0 ? 0 : v > 1 ? 1 : v);
 const lerp = (a, b, t) => a + (b - a) * t;
 
 function deriveLand(elev, N, invert, level) {
@@ -279,31 +289,6 @@ function deriveLand(elev, N, invert, level) {
     if (e > level) isLand[i] = 1;
   }
   return isLand;
-}
-
-// Multi-source BFS in cell steps (same topology as the floods: x wraps, y clamps).
-// `isSource(c)` seeds distance 0; expansion is confined to `passable(c)` cells.
-function bfsDistance(N, W, H, isSource, passable) {
-  const dist = new Float64Array(N).fill(Infinity);
-  const q = new Int32Array(N);
-  let head = 0, tail = 0;
-  for (let c = 0; c < N; c++) if (isSource(c)) { dist[c] = 0; q[tail++] = c; }
-  while (head < tail) {
-    const c = q[head++];
-    const x = c % W, y = (c / W) | 0;
-    const d = dist[c] + 1;
-    const nbr = [
-      y > 0 ? c - W : -1,
-      y < H - 1 ? c + W : -1,
-      x === 0 ? c + W - 1 : c - 1,
-      x === W - 1 ? c - W + 1 : c + 1,
-    ];
-    for (const nn of nbr) {
-      if (nn < 0 || dist[nn] !== Infinity || !passable(nn)) continue;
-      dist[nn] = d; q[tail++] = nn;
-    }
-  }
-  return dist;
 }
 
 // Spatial hash over (x,y) cells bucketed at the spacing radius, so a rejection

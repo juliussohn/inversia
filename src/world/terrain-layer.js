@@ -107,6 +107,12 @@ export function createTerrainLayer(recipe) {
   let gridCount = 0;        // vertices in the grid
   let tiles = null;
 
+  // The "Natural" style draws the terrain as a neutral relief (hillshade only) so
+  // the crisp vector land-cover zones layered over it supply the colour. `biomeOn`
+  // flips the shader between the hypsometric ramp and that neutral base; it tracks
+  // the active style.
+  let biomeOn = false;
+
   // One compiled program per projection variant (mercator vs globe). The prelude
   // — and thus the correct projectTile — changes with the projection, so we key
   // the cache on shaderData.variantName and build lazily on first sight.
@@ -139,6 +145,7 @@ export function createTerrainLayer(recipe) {
         invert: gl.getUniformLocation(program, "uInvert"),
         sea: gl.getUniformLocation(program, "uSea"),
         relief: gl.getUniformLocation(program, "uRelief"),
+        biome: gl.getUniformLocation(program, "uBiome"),
         texel: gl.getUniformLocation(program, "uTexel"),
         // Projection uniforms supplied by the injected prelude. Unused ones in a
         // given variant resolve to null, and gl.uniform* on null is a safe no-op.
@@ -202,6 +209,14 @@ export function createTerrainLayer(recipe) {
     type: "custom",
     renderingMode: "2d",
 
+    // Flip between the hypsometric ramp and the neutral relief base (which the
+    // vector land-cover zones sit over). Driven by the active style (on for
+    // "natural"); a view preference, not part of the world.
+    setBiome(on) {
+      biomeOn = !!on;
+      map?.triggerRepaint();
+    },
+
     onAdd(m, glCtx) {
       map = m;
       gl = glCtx;
@@ -246,6 +261,7 @@ export function createTerrainLayer(recipe) {
       gl.uniform1f(U.invert, invert);
       gl.uniform1f(U.sea, sea);
       gl.uniform1f(U.relief, relief);
+      gl.uniform1f(U.biome, biomeOn ? 1 : 0);
 
       // Terrarium tiles are 256px; MapLibre zoom is defined on 512px tiles, so a
       // tile zoom of round(zoom)+1 keeps each tile ~256 CSS px on screen — the

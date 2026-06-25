@@ -36,7 +36,7 @@
  *  wraps in x (antimeridian) and clamps in y (poles), same as the flood-fill.
  * ------------------------------------------------------------------ */
 
-const R_KM = 6371; // mean Earth radius, for cos-lat cell areas
+import { R_KM } from "./grid.js";
 
 // A binary min-heap over (priority: float, payload: int cell index). Plain typed
 // arrays — no per-entry objects — so the ~2M-cell priority flood stays fast.

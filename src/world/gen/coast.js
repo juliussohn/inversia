@@ -31,8 +31,7 @@
  * ------------------------------------------------------------------ */
 
 import polygonClipping from "polygon-clipping";
-
-const R_KM = 6371; // mean Earth radius, for the lake size filter
+import { R_KM, emptyFC, stitch } from "./grid.js";
 
 // ---- marching squares -----------------------------------------------------
 // Classic 16-case contouring of `values` at iso-level `thr`, returning closed
@@ -53,7 +52,7 @@ const CASE_SEGS = {
   10: null, 11: [[T, RT]], 12: [[RT, L]], 13: [[RT, B]], 14: [[B, L]], 15: [],
 };
 
-function marchingSquares(values, W, H, thr) {
+export function marchingSquares(values, W, H, thr) {
   const idx = (x, y) => y * W + x;
 
   // Edge-crossing vertices, deduped. Key namespace: (y*W + x)*2 + orient,
@@ -137,46 +136,6 @@ function marchingSquares(values, W, H, thr) {
   }
 
   return stitch(sa, sb, vlon, vlat);
-}
-
-// Stitch undirected segments into rings. Every interior crossing is degree-2, so
-// following the unused segment at each vertex traces a chain to its end. Open
-// chains (a contour that exits the grid at a pole or the skipped seam) are walked
-// first from their degree-1 endpoints; whatever remains is closed loops.
-function stitch(sa, sb, vlon, vlat) {
-  const nv = vlon.length;
-  const adj = Array.from({ length: nv }, () => []);
-  for (let i = 0; i < sa.length; i++) {
-    adj[sa[i]].push(i);
-    adj[sb[i]].push(i);
-  }
-  const used = new Uint8Array(sa.length);
-  const other = (seg, v) => (sa[seg] === v ? sb[seg] : sa[seg]);
-
-  function walk(startSeg, startV) {
-    const ids = [startV];
-    let v = startV, seg = startSeg;
-    while (seg !== -1 && !used[seg]) {
-      used[seg] = 1;
-      v = other(seg, v);
-      ids.push(v);
-      seg = -1;
-      for (const s of adj[v]) if (!used[s]) { seg = s; break; }
-    }
-    const ring = new Array(ids.length);
-    for (let i = 0; i < ids.length; i++) ring[i] = [vlon[ids[i]], vlat[ids[i]]];
-    ring.closed = ids[0] === ids[ids.length - 1];
-    return ring;
-  }
-
-  const rings = [];
-  for (let v = 0; v < nv; v++) {
-    if (adj[v].length === 1 && !used[adj[v][0]]) rings.push(walk(adj[v][0], v));
-  }
-  for (let i = 0; i < sa.length; i++) {
-    if (!used[i]) rings.push(walk(i, sa[i]));
-  }
-  return rings;
 }
 
 // ---- water labelling ------------------------------------------------------
@@ -300,7 +259,6 @@ function buildLand(coastRings, eff, W, H, level) {
 }
 
 // ---- public API -----------------------------------------------------------
-const emptyFC = () => ({ type: "FeatureCollection", features: [] });
 
 /**
  * Generate coastline + lake GeoJSON from the global field for the given world

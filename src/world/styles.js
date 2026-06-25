@@ -39,6 +39,7 @@ const VIS_STORAGE_KEY = "inversia.layers";
 export const LAYER_TOGGLES = [
   { key: "terrain", label: "Terrain", terrain: true },
   { key: "land", label: "Land fill", layers: ["land-fill"] },
+  { key: "landcover", label: "Land cover", layers: ["biome-fill"] },
   { key: "borders", label: "Borders", layers: ["country-border"] },
   { key: "coast", label: "Coastline", layers: ["coast-line"] },
   { key: "rivers", label: "Rivers", layers: ["rivers-line"] },
@@ -67,6 +68,7 @@ export const STYLE_PRESETS = {
     terrain: { visible: true },
     layers: {
       "land-fill": { visibility: "none" },
+      "biome-fill": { visibility: "none" },
       // interior country borders only (coastal edges aren't emitted) — subtle so
       // they don't fight the relief. No coastline stroke: the terrain's own
       // land/water colour break reads the shore, the way real relief maps do.
@@ -94,12 +96,58 @@ export const STYLE_PRESETS = {
     },
   },
 
+  natural: {
+    label: "Natural",
+    // Like relief, the live terrain IS the map — but drawn in land-cover (biome)
+    // mode (greens, deserts, ice) instead of the elevation ramp. `terrain.biome`
+    // drives the shader flag (applyStyle flips it), so it follows the style with no
+    // separate sync. The terrain paints the sea too, so the backdrop is
+    // recipe-derived (ocean: null).
+    ocean: null,
+    terrain: { visible: true, biome: true },
+    layers: {
+      "land-fill": { visibility: "none" },
+      // the crisp vector land-cover zones — this style's defining layer.
+      "biome-fill": { visibility: "visible" },
+      // soft, sparse interior borders — present but quiet, the way a physical atlas
+      // keeps political lines faint over the terrain.
+      "country-border": {
+        visibility: "visible",
+        paint: {
+          "line-color": "#5a5346",
+          "line-opacity": 0.4,
+          "line-width": ["interpolate", ["linear"], ["zoom"], 0, 0.4, 4, 1.0, 8, 1.8],
+        },
+      },
+      // a hairline shore defines the coast crisply against the land cover.
+      "coast-line": {
+        visibility: "visible",
+        paint: {
+          "line-color": "#3c5763",
+          "line-opacity": 0.5,
+          "line-width": ["interpolate", ["linear"], ["zoom"], 0, 0.3, 4, 0.7, 8, 1.3],
+        },
+      },
+      "lakes-fill": { visibility: "visible", paint: { "fill-color": "#3aa0c9", "fill-opacity": 0.5 } },
+      "lakes-line": { visibility: "visible", paint: { "line-color": "#bfe6f2", "line-opacity": 0.5, "line-width": 0.6 } },
+      "rivers-line": { visibility: "visible", paint: { "line-color": "#2b7fb8", "line-opacity": 0.9 } },
+      "cities-symbol": { visibility: "visible", paint: { "icon-opacity": 1 } },
+      "country-label": { visibility: "visible", paint: { "text-opacity": 0.92 } },
+      "cities-label": { visibility: "visible", paint: { "text-opacity": 1 } },
+      "rivers-label": { visibility: "visible", paint: { "text-opacity": 0.85 } },
+      "lakes-label": { visibility: "visible", paint: { "text-opacity": 0.85 } },
+      "ocean-label": { visibility: "visible", paint: { "text-opacity": 0.72 } },
+      "continent-label": { visibility: "visible", paint: { "text-opacity": 0.5 } },
+    },
+  },
+
   political: {
     label: "Political",
     ocean: "#aacbe0",
     terrain: { visible: false },
     layers: {
       "land-fill": { visibility: "visible", paint: { "fill-color": "#ece6d6", "fill-opacity": 1 } },
+      "biome-fill": { visibility: "none" },
       // atlas look: bold country outlines over the paper land (no fills). Borders
       // are interior-only now, so they trace state-vs-state frontiers but never the
       // shore — the paper-land / blue-sea colour break is the coastline.
@@ -133,6 +181,7 @@ export const STYLE_PRESETS = {
     terrain: { visible: false },
     layers: {
       "land-fill": { visibility: "visible", paint: { "fill-color": "#d4dade", "fill-opacity": 1 } },
+      "biome-fill": { visibility: "none" },
       // quiet two-tone: no political boundaries at all
       "country-border": { visibility: "none" },
       "coast-line": {
@@ -212,14 +261,18 @@ export function showReliefPreview(map, terrainId) {
  * unmodified.
  *
  * @param {import("maplibre-gl").Map} map
- * @param {string} terrainId  id of the terrain custom layer
+ * @param {{ id: string, setBiome?: (on: boolean) => void }} terrain  the terrain custom layer
  * @param {string} styleId
  * @param {Record<string, boolean>} [visibility]  per-toggle on/off overrides
  */
-export function applyStyle(map, terrainId, styleId, visibility) {
+export function applyStyle(map, terrain, styleId, visibility) {
   const on = (key) => visibility?.[key] !== false; // default ON when unset
   const preset = STYLE_PRESETS[normalizeStyle(styleId)];
-  setVisible(map, terrainId, preset.terrain.visible && on("terrain"));
+  setVisible(map, terrain.id, preset.terrain.visible && on("terrain"));
+  // The Natural style draws the terrain as a neutral relief under the vector
+  // land-cover; every other style keeps the hypsometric ramp. A view preference
+  // tied to the style, so it rides along with the rest of the preset.
+  terrain.setBiome?.(!!preset.terrain.biome);
   for (const [layerId, spec] of Object.entries(preset.layers)) {
     if (!map.getLayer(layerId)) continue;
     const toggle = LAYER_TO_TOGGLE.get(layerId);

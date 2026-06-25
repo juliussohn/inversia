@@ -54,6 +54,10 @@ export const RECIPE_SCHEMA = {
       ridge: { type: "float", default: 0.6, min: 0, max: 1, step: 0.05, label: "Ridge affinity" },
       river: { type: "float", default: 0.6, min: 0, max: 1, step: 0.05, label: "River affinity" },
       seaCross: { type: "float", default: 0.4, min: 0, max: 1, step: 0.05, label: "Sea-crossing cost" },
+      // 0.5 = the hand-tuned baseline (computeCountries maps each onto its constant).
+      minArea: { type: "float", default: 0.5, min: 0, max: 1, step: 0.05, label: "Min country size" },
+      seaReach: { type: "float", default: 0.5, min: 0, max: 1, step: 0.05, label: "Sea reach" },
+      riverBorders: { type: "float", default: 0.5, min: 0, max: 1, step: 0.05, label: "River borders" },
     },
   },
 
@@ -62,6 +66,11 @@ export const RECIPE_SCHEMA = {
     fields: {
       density: { type: "float", default: 0.5, min: 0, max: 1, step: 0.05, label: "Density" },
       spacing: { type: "float", default: 0.5, min: 0, max: 1, step: 0.05, label: "Min spacing" },
+      // 0.5 = the hand-tuned baseline (computeCities maps each onto its constant).
+      coastPull: { type: "float", default: 0.5, min: 0, max: 1, step: 0.05, label: "Coastal pull" },
+      riverPull: { type: "float", default: 0.5, min: 0, max: 1, step: 0.05, label: "River pull" },
+      lowland: { type: "float", default: 0.5, min: 0, max: 1, step: 0.05, label: "Lowland preference" },
+      bigCityShare: { type: "float", default: 0.5, min: 0, max: 1, step: 0.05, label: "Big-city share" },
     },
   },
 
@@ -78,7 +87,32 @@ export const RECIPE_SCHEMA = {
       minSize: { type: "float", default: 0.2, min: 0, max: 1, step: 0.05, label: "Min size" },
     },
   },
+
+  // Climate knobs for the "Natural" style's land-cover zones. All normalised 0..1
+  // with 0.5 = the baseline tuning, so a default world is unchanged; the worker
+  // (src/world/gen/biome.js, resolveClimate) maps each onto the moisture model.
+  climate: {
+    label: "Climate",
+    fields: {
+      continental: { type: "float", default: 0.5, min: 0, max: 1, step: 0.05, label: "Continental dryness" },
+      maritimeReach: { type: "float", default: 0.5, min: 0, max: 1, step: 0.05, label: "Maritime reach" },
+      coastalHumidity: { type: "float", default: 0.5, min: 0, max: 1, step: 0.05, label: "Coastal humidity" },
+      riverGreening: { type: "float", default: 0.5, min: 0, max: 1, step: 0.05, label: "River greening" },
+      rainShadow: { type: "float", default: 0.5, min: 0, max: 1, step: 0.05, label: "Rain shadow" },
+      altitudeCooling: { type: "float", default: 0.5, min: 0, max: 1, step: 0.05, label: "Altitude cooling" },
+      rainfall: { type: "float", default: 0.5, min: 0, max: 1, step: 0.05, label: "Rainfall" },
+      tropicalExtent: { type: "float", default: 0.5, min: 0, max: 1, step: 0.05, label: "Tropical extent" },
+      temperateRain: { type: "float", default: 0.5, min: 0, max: 1, step: 0.05, label: "Temperate rainfall" },
+      riverWidth: { type: "float", default: 0.5, min: 0, max: 1, step: 0.05, label: "River valley width" },
+      vegetation: { type: "float", default: 0.5, min: 0, max: 1, step: 0.05, label: "Vegetation density" },
+    },
+  },
 };
+
+// The climate group's field names, in schema order. One source of truth for the
+// knobs threaded through featureSig → the worker message → the biome signature,
+// so adding a climate knob to the schema above wires it everywhere automatically.
+export const CLIMATE_FIELDS = Object.keys(RECIPE_SCHEMA.climate.fields);
 
 // ---- schema helpers ------------------------------------------------------
 

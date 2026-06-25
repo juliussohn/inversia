@@ -19,7 +19,7 @@
  *                      density, spacing }
  *    worker → main : { type:"features", id, coast, land, lakes, rivers,
  *                      countries, cities, countryLabels, oceanLabels,
- *                      continentLabels, stats }
+ *                      continentLabels, biomes, stats }
  *                    { type:"error",    id, message }
  *  The `id` lets the main thread ignore stale responses when a newer request has
  *  already been issued (e.g. fast successive slider settles).
@@ -30,7 +30,9 @@ import { generate } from "./gen/coast.js";
 import { computeFlow, extractRivers } from "./gen/hydro.js";
 import { computeCountries } from "./gen/countries.js";
 import { computeCities } from "./gen/cities.js";
+import { computeBiomes } from "./gen/biome.js";
 import { nameWorld } from "./names.js";
+import { CLIMATE_FIELDS } from "./recipe.js";
 
 let fieldPromise = null;
 const field = () => (fieldPromise ??= loadField());
@@ -40,6 +42,7 @@ let coastCache = { sig: "", coast: null, land: null, lakes: null, stats: null };
 let flowCache = { sig: "", flow: null };
 let countryCache = { sig: "", countries: null, owner: null, isLand: null, stats: null };
 let cityCache = { sig: "", cities: null, stats: null };
+let biomeCache = { sig: "", biomes: null };
 
 self.onmessage = async (e) => {
   const msg = e.data;
@@ -77,12 +80,26 @@ self.onmessage = async (e) => {
       threshold: msg.threshold,
     });
 
+    // the biome / land-cover zones depend only on water + invert (the same
+    // geometry the coast does), so they're memoised on that signature and reused
+    // whenever only the river threshold / country / city knobs move.
+    const biomeSig = [msg.water, msg.invert ? 1 : 0, ...CLIMATE_FIELDS.map((k) => msg[k])].join("|");
+    if (biomeSig !== biomeCache.sig) {
+      step("biome");
+      const { biomes } = computeBiomes(f, flowCache.flow, {
+        water: msg.water,
+        invert: msg.invert,
+        ...Object.fromEntries(CLIMATE_FIELDS.map((k) => [k, msg[k]])),
+      });
+      biomeCache = { sig: biomeSig, biomes };
+    }
+
     // countries grow over the field, taking the cached flow as a river-border
     // affinity. They depend on water/invert (the field) plus the seed and every
     // country knob, so they re-run only when one of those actually moves.
     const countrySig =
       `${msg.water}|${msg.invert ? 1 : 0}|${msg.seed}|${msg.count}|${msg.areaSkew}|${msg.ambition}|` +
-      `${msg.ridge}|${msg.river}|${msg.seaCross}`;
+      `${msg.ridge}|${msg.river}|${msg.seaCross}|${msg.minArea}|${msg.seaReach}|${msg.riverBorders}`;
     if (countrySig !== countryCache.sig) {
       step("countries");
       const { countries, owner, isLand, stats } = computeCountries(f, flowCache.flow, {
@@ -95,20 +112,29 @@ self.onmessage = async (e) => {
         ridge: msg.ridge,
         river: msg.river,
         seaCross: msg.seaCross,
+        minArea: msg.minArea,
+        seaReach: msg.seaReach,
+        riverBorders: msg.riverBorders,
       });
       countryCache = { sig: countrySig, countries, owner, isLand, stats };
     }
 
     // cities sit on habitable land and take their allegiance from the country
     // owner grid, so they depend on everything the countries do (folded into
-    // countrySig) plus their own density/spacing knobs — nothing else.
-    const citySig = `${countrySig}|${msg.density}|${msg.spacing}`;
+    // countrySig) plus their own placement knobs — nothing else.
+    const citySig =
+      `${countrySig}|${msg.density}|${msg.spacing}|` +
+      `${msg.coastPull}|${msg.riverPull}|${msg.lowland}|${msg.bigCityShare}`;
     if (citySig !== cityCache.sig) {
       step("cities");
       const { cities, stats } = computeCities(
         f, flowCache.flow,
         { owner: countryCache.owner, isLand: countryCache.isLand },
-        { water: msg.water, invert: msg.invert, density: msg.density, spacing: msg.spacing },
+        {
+          water: msg.water, invert: msg.invert, density: msg.density, spacing: msg.spacing,
+          coastPull: msg.coastPull, riverPull: msg.riverPull,
+          lowland: msg.lowland, bigCityShare: msg.bigCityShare,
+        },
       );
       cityCache = { sig: citySig, cities, stats };
     }
@@ -141,6 +167,7 @@ self.onmessage = async (e) => {
       countryLabels,
       oceanLabels,
       continentLabels,
+      biomes: biomeCache.biomes,
       stats: { ...coastCache.stats, ...riverStats, ...countryCache.stats, ...cityCache.stats },
     });
   } catch (err) {

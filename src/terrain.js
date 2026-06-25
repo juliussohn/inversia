@@ -40,6 +40,7 @@ uniform sampler2D uTile;
 uniform float uInvert;   // 0 real, 1 inversia
 uniform float uSea;      // water level, metres
 uniform float uRelief;   // hillshade strength 0..2
+uniform float uBiome;    // 0 hypsometric ramp, 1 neutral relief (under vector land-cover)
 uniform vec2 uTexel;     // 1/256
 out vec4 o;
 
@@ -68,12 +69,23 @@ vec3 seaColor(float d) {
   return c;
 }
 
+// Neutral land tone for the "Natural" style: the live terrain becomes a soft,
+// near-colourless relief (the hillshade still reads) so the crisp vector land-cover
+// zones drawn over it supply the colour. A faint lift with altitude keeps high
+// ground from going flat. Oceans keep their blue (seaColor) — only land is neutral.
+vec3 reliefBase(float h) {
+  vec3 lo = vec3(0.82, 0.81, 0.77);
+  vec3 hi = vec3(0.90, 0.89, 0.86);
+  return mix(lo, hi, smoothstep(0.0, 3500.0, h));
+}
+
 void main() {
   float e = decode(vUv);
   float eff = mix(e, -e, uInvert);
   float above = eff - uSea;
   bool land = above > 0.0;
-  vec3 base = land ? landColor(above) : seaColor(-above);
+  vec3 landC = uBiome > 0.5 ? reliefBase(above) : landColor(above);
+  vec3 base = land ? landC : seaColor(-above);
 
   // hillshade from local slope (sign follows inversion so relief reads right)
   float sgn = mix(1.0, -1.0, uInvert);
