@@ -94,11 +94,11 @@ let featReqId = 0;       // newest request issued
 let featAckId = 0;       // newest response applied (drop anything older / stale)
 let lastSig = "";        // params last sent — skip regen when nothing relevant changed
 
-// Only the water line, inversion and lake-size floor change the geometry. Relief,
-// seed, future-phase knobs etc. leave coast/lakes untouched, so we fingerprint
-// just those three and skip the worker round-trip when they haven't moved.
+// Only the water line, inversion, lake-size floor and river threshold change the
+// geometry. Relief, seed, future-phase knobs etc. leave the features untouched, so
+// we fingerprint just those and skip the worker round-trip when they haven't moved.
 function featureSig() {
-  return `${recipe.world.water}|${recipe.world.invert ? 1 : 0}|${recipe.lakes.minSize}`;
+  return `${recipe.world.water}|${recipe.world.invert ? 1 : 0}|${recipe.lakes.minSize}|${recipe.rivers.threshold}`;
 }
 
 function requestFeatures() {
@@ -111,6 +111,7 @@ function requestFeatures() {
     water: recipe.world.water,
     invert: recipe.world.invert,
     minSize: recipe.lakes.minSize,
+    threshold: recipe.rivers.threshold,
   });
 }
 
@@ -128,6 +129,7 @@ worker.onmessage = (e) => {
   featAckId = msg.id;
   map.getSource("coast")?.setData(msg.coast);
   map.getSource("lakes")?.setData(msg.lakes);
+  map.getSource("rivers")?.setData(msg.rivers);
 };
 
 // Coast stroke + lake fill, styled to read as one world. The terrain shader
@@ -138,6 +140,7 @@ worker.onmessage = (e) => {
 function addFeatureLayers() {
   map.addSource("lakes", { type: "geojson", data: emptyFC() });
   map.addSource("coast", { type: "geojson", data: emptyFC() });
+  map.addSource("rivers", { type: "geojson", data: emptyFC() });
 
   map.addLayer({
     id: "lakes-fill",
@@ -159,6 +162,28 @@ function addFeatureLayers() {
       "line-color": "#0b1a26",
       "line-opacity": 0.85,
       "line-width": ["interpolate", ["linear"], ["zoom"], 0, 0.4, 4, 0.9, 8, 1.6],
+    },
+  });
+
+  // Rivers sit on top of the land, painted over the coast. Width grows with the
+  // Strahler order so trickling headwaters stay hairline while continental trunks
+  // read boldly; the per-feature order also feeds the zoom interpolation so the
+  // whole network thickens together as you zoom in. Round caps/joins keep the
+  // dendritic branching smooth where segments meet at confluences.
+  map.addLayer({
+    id: "rivers-line",
+    type: "line",
+    source: "rivers",
+    layout: { "line-cap": "round", "line-join": "round" },
+    paint: {
+      "line-color": "#2b7fb8",
+      "line-opacity": 0.9,
+      "line-width": [
+        "interpolate", ["linear"], ["zoom"],
+        0, ["*", ["get", "strahler"], 0.18],
+        4, ["*", ["get", "strahler"], 0.7],
+        8, ["*", ["get", "strahler"], 1.7],
+      ],
     },
   });
 }
