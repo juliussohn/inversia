@@ -17,12 +17,20 @@
  *    main → worker : { type:"generate", id, water, invert, minSize, threshold,
  *                      seed, count, areaSkew, ambition, ridge, river, seaCross,
  *                      density, spacing }
- *    worker → main : { type:"features", id, coast, land, lakes, rivers,
- *                      countries, cities, countryLabels, oceanLabels,
- *                      continentLabels, biomes, stats }
- *                    { type:"error",    id, message }
- *  The `id` lets the main thread ignore stale responses when a newer request has
- *  already been issued (e.g. fast successive slider settles).
+ *    worker → main : { type:"progress", id, stage }              // narration
+ *                    { type:"layer", id, name, data, count }     // one pass landed
+ *                    { type:"done",  id, stats }                 // run finished
+ *                    { type:"error", id, message }
+ *  STREAMING. Rather than one terminal `features` post, the worker streams each
+ *  pass's GeoJSON as a `layer` message the instant that pass finishes (coast →
+ *  rivers → biome → countries → cities → naming), yielding the thread between
+ *  posts so the main thread can paint that layer before the next (blocking) pass
+ *  runs. This is what lets a full rebuild visibly BUILD UP. The naming pass
+ *  mutates cities/rivers/lakes in place (adds `name`), so those three are
+ *  re-posted after it — identical geometry, now carrying labels. `count` rides on
+ *  the four counted passes (lakes, rivers, countries, cities) for the live tally.
+ *  The `id` lets the main thread ignore stale responses (and the worker abort
+ *  mid-stream) when a newer request has been issued — newest wins.
  * ------------------------------------------------------------------ */
 
 import { loadField } from "./field.js";
@@ -44,16 +52,33 @@ let countryCache = { sig: "", countries: null, owner: null, isLand: null, stats:
 let cityCache = { sig: "", cities: null, stats: null };
 let biomeCache = { sig: "", biomes: null };
 
+// The newest request id seen. Each pass checks `fresh()` before its (blocking)
+// work and before every post, so a superseded run bails mid-stream — newest wins.
+let latest = 0;
+
 self.onmessage = async (e) => {
   const msg = e.data;
   if (!msg || msg.type !== "generate") return;
-  // Narrate which pass is about to run so the main thread can show a stage-by-
-  // stage loader. We post the label BEFORE the (synchronous, blocking) pass, so
-  // the worker thread is busy on that stage while the message displays — the
-  // timing lines up on its own. Only the passes that actually execute emit a
-  // step (the cache guards below skip the unchanged ones), so the loader shows
-  // exactly what's being recomputed.
-  const step = (stage) => self.postMessage({ type: "progress", id: msg.id, stage });
+  latest = msg.id;
+  const fresh = () => msg.id === latest;
+
+  // Yield the worker thread so the main thread can paint the layer we just posted
+  // before the next (synchronous, blocking) pass seizes the thread again.
+  const yieldTick = () => new Promise((r) => setTimeout(r, 0));
+
+  // Narrate which pass is about to run (drives the snap path's single-line
+  // loader). Only the passes that actually execute emit a step — the cache guards
+  // below skip the unchanged ones — so it shows exactly what's being recomputed.
+  const step = (stage) => { if (fresh()) self.postMessage({ type: "progress", id: msg.id, stage }); };
+
+  // Stream one pass's GeoJSON the instant it's ready, then yield. `count` rides on
+  // the four counted passes for the main thread's live tally.
+  const postLayer = async (name, data, count) => {
+    if (!fresh()) return;
+    self.postMessage({ type: "layer", id: msg.id, name, data, count });
+    await yieldTick();
+  };
+
   try {
     const f = await field();
 
@@ -68,6 +93,10 @@ self.onmessage = async (e) => {
       });
       coastCache = { sig: coastSig, coast, land, lakes, stats };
     }
+    if (!fresh()) return;
+    await postLayer("coast", coastCache.coast);
+    await postLayer("land", coastCache.land);
+    await postLayer("lakes", coastCache.lakes, coastCache.stats.lakes);
 
     // the hydrology flow field depends only on water / invert; the threshold is a
     // cheap post-filter, so a threshold-only change reuses the cached flow.
@@ -79,6 +108,7 @@ self.onmessage = async (e) => {
     const { rivers, stats: riverStats } = extractRivers(flowCache.flow, {
       threshold: msg.threshold,
     });
+    await postLayer("rivers", rivers, riverStats.rivers);
 
     // the biome / land-cover zones depend only on water + invert (the same
     // geometry the coast does), so they're memoised on that signature and reused
@@ -93,6 +123,7 @@ self.onmessage = async (e) => {
       });
       biomeCache = { sig: biomeSig, biomes };
     }
+    await postLayer("biomes", biomeCache.biomes);
 
     // countries grow over the field, taking the cached flow as a river-border
     // affinity. They depend on water/invert (the field) plus the seed and every
@@ -118,6 +149,7 @@ self.onmessage = async (e) => {
       });
       countryCache = { sig: countrySig, countries, owner, isLand, stats };
     }
+    await postLayer("countries", countryCache.countries, countryCache.stats.countries);
 
     // cities sit on habitable land and take their allegiance from the country
     // owner grid, so they depend on everything the countries do (folded into
@@ -138,6 +170,7 @@ self.onmessage = async (e) => {
       );
       cityCache = { sig: citySig, cities, stats };
     }
+    await postLayer("cities", cityCache.cities, cityCache.stats.cities);
 
     // Phase 9: name everything deterministically from the seed + geography. This
     // MUTATES the city/river/lake features (adds `name` + `family`) and returns a
@@ -154,22 +187,22 @@ self.onmessage = async (e) => {
       rivers,
       lakes: coastCache.lakes,
     });
+    await postLayer("countryLabels", countryLabels);
+    await postLayer("oceanLabels", oceanLabels);
+    await postLayer("continentLabels", continentLabels);
+    // naming mutated these three in place — re-post so the label layers pick up the
+    // freshly-written `name` property. Geometry is identical (a silent MapLibre diff).
+    await postLayer("cities", cityCache.cities, cityCache.stats.cities);
+    await postLayer("rivers", rivers, riverStats.rivers);
+    await postLayer("lakes", coastCache.lakes, coastCache.stats.lakes);
 
-    self.postMessage({
-      type: "features",
-      id: msg.id,
-      coast: coastCache.coast,
-      land: coastCache.land,
-      lakes: coastCache.lakes,
-      rivers,
-      countries: countryCache.countries,
-      cities: cityCache.cities,
-      countryLabels,
-      oceanLabels,
-      continentLabels,
-      biomes: biomeCache.biomes,
-      stats: { ...coastCache.stats, ...riverStats, ...countryCache.stats, ...cityCache.stats },
-    });
+    if (fresh()) {
+      self.postMessage({
+        type: "done",
+        id: msg.id,
+        stats: { ...coastCache.stats, ...riverStats, ...countryCache.stats, ...cityCache.stats },
+      });
+    }
   } catch (err) {
     self.postMessage({ type: "error", id: msg.id, message: String((err && err.message) || err) });
   }

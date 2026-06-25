@@ -117,7 +117,8 @@ body {
 
 /* Generation loader — narrates the worker's stage-by-stage progress (coastlines,
    rivers, borders, cities, naming) while the world regenerates. Top-centre so it
-   doesn't collide with the bottom toast or the panel. */
+   doesn't collide with the bottom toast or the panel. A downstream-only "snap"
+   shows just the spinner + line; a full rebuild adds the .buildup segmented bar. */
 #gen-loader {
   position: fixed;
   top: 16px;
@@ -125,10 +126,10 @@ body {
   transform: translateX(-50%) translateY(-6px);
   z-index: 30;
   display: flex;
-  align-items: center;
-  gap: 10px;
+  flex-direction: column;
+  gap: 8px;
   padding: 8px 16px;
-  border-radius: 999px;
+  border-radius: 14px;
   font-size: 13px;
   letter-spacing: 0.02em;
   color: #eaf1fb;
@@ -145,20 +146,98 @@ body {
   transform: translateX(-50%) translateY(0);
 }
 
-#gen-loader .gen-spinner {
-  width: 14px;
-  height: 14px;
-  border-radius: 50%;
-  border: 2px solid rgba(207, 224, 245, 0.3);
-  border-top-color: #cfe0f5;
-  animation: gen-spin 0.7s linear infinite;
-  flex: none;
+/* Snap look: pill shape, no bar. */
+#gen-loader:not(.buildup) {
+  border-radius: 999px;
 }
 
-@keyframes gen-spin {
-  to { transform: rotate(360deg); }
+#gen-loader .gen-row {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+}
+
+/* Per-stage line icon (replaces the spinner) — gently pulses so it reads as live. */
+#gen-loader .gen-icon {
+  display: flex;
+  flex: none;
+  color: #cfe0f5;
+  animation: gen-icon-pulse 1.4s ease-in-out infinite;
+}
+
+#gen-loader .gen-icon svg {
+  width: 16px;
+  height: 16px;
+}
+
+/* Progress bar — six EQUAL segments, filled left-to-right by .gen-fill like a real
+   progress bar. Hidden on the snap path; shown only while a build-up owns it. The
+   ::after lays thin dividers (matched to the pill background) at every 1/--segs to
+   read as equal segments without breaking the continuous fill underneath. */
+#gen-loader .gen-bar {
+  display: none;
+  position: relative;
+  width: 240px;
+  height: 5px;
+  border-radius: 3px;
+  overflow: hidden;
+  background: rgba(207, 224, 245, 0.18);
+  --segs: 6;
+}
+
+#gen-loader.buildup .gen-bar {
+  display: block;
+}
+
+/* Width is driven frame-by-frame in JS (a trickle toward the active stage's
+   ceiling); the only CSS transition is the final ease-to-full, set inline. */
+#gen-loader .gen-fill {
+  position: absolute;
+  inset: 0 auto 0 0;
+  width: 0;
+  border-radius: 3px;
+  background: #cfe0f5;
+  overflow: hidden;
+}
+
+/* Indeterminate sheen sweeping across the filled portion — keeps the bar reading
+   as "working" even while it's pegged just short of a slow pass's boundary. */
+#gen-loader .gen-fill::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  background: linear-gradient(90deg, transparent, rgba(255, 255, 255, 0.45), transparent);
+  background-size: 60% 100%;
+  background-repeat: no-repeat;
+  animation: gen-sheen 1.1s linear infinite;
+}
+
+@keyframes gen-sheen {
+  from { background-position: -60% 0; }
+  to { background-position: 160% 0; }
+}
+
+#gen-loader .gen-bar::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  background: repeating-linear-gradient(
+    90deg,
+    transparent 0,
+    transparent calc(100% / var(--segs) - 2px),
+    rgba(20, 28, 42, 0.92) calc(100% / var(--segs) - 2px),
+    rgba(20, 28, 42, 0.92) calc(100% / var(--segs))
+  );
+}
+
+@keyframes gen-icon-pulse {
+  0%, 100% { opacity: 0.55; }
+  50% { opacity: 1; }
 }
 
 @media (prefers-reduced-motion: reduce) {
-  #gen-loader .gen-spinner { animation-duration: 1.6s; }
+  #gen-loader .gen-icon { animation: none; }
+  #gen-loader .gen-fill { transition-duration: 0s; }
+  #gen-loader .gen-fill::after { animation: none; }
 }

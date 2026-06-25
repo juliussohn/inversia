@@ -25,7 +25,7 @@ import { createTerrainLayer } from "./world/terrain-layer.js";
 import { BIOME_PALETTE } from "./world/biome-palette.js";
 import {
   STYLE_PRESETS, DEFAULT_STYLE, applyStyle, readStyleId, persistStyle,
-  createStylePicker, normalizeStyle,
+  createStylePicker, normalizeStyle, LAYER_TOGGLES,
   readLayerVisibility, persistLayerVisibility, showReliefPreview,
 } from "./world/styles.js";
 import { loadWorldStat, landFraction } from "./terrain.js";
@@ -136,34 +136,242 @@ let featReqId = 0;       // newest request issued
 let featAckId = 0;       // newest response applied (drop anything older / stale)
 let lastSig = "";        // params last sent — skip regen when nothing relevant changed
 
-// ---- generation loader ---------------------------------------------------
-// A small overlay that narrates what the worker is doing, stage by stage. The
-// worker posts a `progress` step before each pass (see worker.js); we map those
-// keys to friendly lines. Shown when a request is dispatched, hidden when its
-// features land.
-const STAGE_LABELS = {
-  start: "Generating world…",
-  coast: "Tracing coastlines…",
-  rivers: "Carving rivers…",
-  countries: "Drawing borders…",
-  cities: "Founding cities…",
-  biome: "Painting climates…",
-  naming: "Naming places…",
+// ---- build-up vs snap (which presentation a regen gets) ------------------
+// A full rebuild — first generation, or any change to the coast sub-signature
+// (water / invert / lake floor), which is exactly when ALL six passes re-run —
+// plays as a BUILD-UP: the old world clears, a segmented progress bar fronts the
+// run, and each layer fades in the moment its pass lands. Every other change
+// (river threshold, country/city knobs) is a downstream-only SNAP: today's
+// hold-the-relief-preview, single-line loader, reveal-all-at-once behaviour.
+let firstGen = true;            // the very first generation is always a build-up
+let lastCoastSig = null;        // coast sub-sig last sent; a change forces a build-up
+let activeBuildUp = false;      // is the in-flight regen a build-up?
+const buildUpDone = new Set();  // segments already completed this build-up (idempotent reveal)
+let pending = null;             // accumulates streamed layers → lastFeatures on done
+
+// The coast pass (and with it every downstream pass) re-runs only when one of
+// these moves; keyed identically to the worker's coastSig so the fork lines up.
+function coastSubSig() {
+  return `${recipe.world.water}|${recipe.world.invert ? 1 : 0}|${recipe.lakes.minSize}`;
+}
+
+// Streamed `layer` name → the GeoJSON source it fills (the worker's names match
+// the saved-bundle payload keys; only "biomes" maps to a differently-named source).
+const NAME_TO_SOURCE = {
+  coast: "coast", land: "land", lakes: "lakes", rivers: "rivers", biomes: "biome",
+  countries: "countries", cities: "cities",
+  countryLabels: "country-labels", oceanLabels: "ocean-labels", continentLabels: "continent-labels",
 };
-let loaderEl = null;
+// Streamed layer name → which live counter it feeds (countries · cities · rivers · lakes).
+const LAYER_COUNT = { lakes: "lakes", rivers: "rivers", countries: "countries", cities: "cities" };
+// Which streamed layer marks a progress SEGMENT complete (the last post of that
+// pass), and the MapLibre layers that segment reveals. Place-name labels are
+// revealed together at the end (the final applyStyle), so naming reveals nothing.
+const LAYER_COMPLETES_SEG = {
+  lakes: "coast", rivers: "rivers", biomes: "biome",
+  countries: "countries", cities: "cities", continentLabels: "naming",
+};
+const SEG_LAYERS = {
+  coast: ["land-fill", "coast-line", "lakes-fill", "lakes-line"],
+  rivers: ["rivers-line"],
+  biome: ["biome-fill"],
+  countries: ["country-border"],
+  cities: ["cities-symbol"],
+  naming: [],
+};
+// Each feature layer's opacity lever, used to fade a layer in (0 → preset target)
+// as its pass lands during a build-up.
+const LAYER_OPACITY_PROP = {
+  "land-fill": "fill-opacity", "biome-fill": "fill-opacity",
+  "country-border": "line-opacity", "coast-line": "line-opacity",
+  "lakes-fill": "fill-opacity", "lakes-line": "line-opacity",
+  "rivers-line": "line-opacity",
+  "cities-symbol": "icon-opacity",
+  "country-label": "text-opacity", "cities-label": "text-opacity",
+  "rivers-label": "text-opacity", "lakes-label": "text-opacity",
+  "ocean-label": "text-opacity", "continent-label": "text-opacity",
+};
+// layerId → owning visibility toggle key, so a build-up reveal honours the same
+// per-layer show/hide overrides applyStyle does.
+const LAYER_TOGGLE_KEY = new Map();
+for (const t of LAYER_TOGGLES) for (const id of t.layers ?? []) LAYER_TOGGLE_KEY.set(id, t.key);
+
+const FADE = { duration: 200 };   // per-layer reveal fade
+const SNAP = { duration: 0 };     // instant (style switches, build-up teardown)
+
+// Would the current style + user toggles show this layer? (Mirrors applyStyle.)
+function shouldShow(layerId) {
+  const preset = STYLE_PRESETS[normalizeStyle(currentStyle)].layers[layerId];
+  if (!preset || preset.visibility === "none") return false;
+  const key = LAYER_TOGGLE_KEY.get(layerId);
+  return !key || layerVisibility[key] !== false;
+}
+// Flip every feature layer's opacity transition between an instant snap and the
+// build-up fade. Toggled on at build-up start, restored to snap when it finishes.
+function setOpacityTransitions(t) {
+  for (const [id, prop] of Object.entries(LAYER_OPACITY_PROP)) {
+    try { map.setPaintProperty(id, `${prop}-transition`, t); } catch { /* layer not ready */ }
+  }
+}
+// Each layer's opacity is faded in from 0 during a build-up, so we snapshot its
+// TRUE current value first (some — e.g. biome-fill at 0.88 — set their opacity
+// only at layer creation, never in a preset, so a guessed target would be wrong)
+// and restore exactly that. The captured value is style-independent enough that
+// the final applyStyle still overrides any layer whose preset names an opacity.
+const opacityTargets = new Map();
+function captureAndZeroOpacities() {
+  setOpacityTransitions(SNAP);     // zero instantly, no fade-out flash
+  for (const [id, prop] of Object.entries(LAYER_OPACITY_PROP)) {
+    try {
+      const cur = map.getPaintProperty(id, prop);
+      opacityTargets.set(id, cur == null ? 1 : cur);
+      map.setPaintProperty(id, prop, 0);
+    } catch { /* layer not ready */ }
+  }
+  setOpacityTransitions(FADE);     // arm the per-layer reveal fade
+}
+// Restore every feature layer's captured opacity (those still hidden simply stay
+// invisible). Run before the final applyStyle so a preset's explicit opacity wins.
+function restoreOpacities() {
+  for (const [id, prop] of Object.entries(LAYER_OPACITY_PROP)) {
+    try { map.setPaintProperty(id, prop, opacityTargets.get(id) ?? 1); } catch { /* layer not ready */ }
+  }
+}
+// Reveal one already-filled layer: make it visible (if the style shows it) and
+// fade its opacity from the build-up's pre-zeroed 0 up to its captured target.
+function revealLayer(layerId) {
+  if (!shouldShow(layerId)) return;
+  try {
+    map.setLayoutProperty(layerId, "visibility", "visible");
+    map.setPaintProperty(layerId, LAYER_OPACITY_PROP[layerId], opacityTargets.get(layerId) ?? 1);
+  } catch { /* layer not ready */ }
+}
+
+// ---- generation loader ---------------------------------------------------
+// Two presentations, one element. A full rebuild fronts a real progress bar
+// (six equal segments, one per pass) that fills left-to-right as each pass lands,
+// a per-stage icon, and a present-tense line naming what's being computed RIGHT
+// NOW ("Carving rivers…"). A downstream-only snap shows just the icon + line (bar
+// hidden), narrated by the worker's `progress` steps. Feature tallies count up in
+// the bottom stats strip as each pass reports in (see animateCount / setCounts).
+const STAGE_ORDER = ["coast", "rivers", "biome", "countries", "cities", "naming"];
+// Present-continuous, "happening now" — set the instant the previous pass lands,
+// so the line names the pass the worker is actually crunching at that moment.
+const STAGE_MSG = {
+  start: "Generating world",
+  coast: "Tracing coastlines",
+  rivers: "Carving rivers",
+  biome: "Painting climates",
+  countries: "Drawing borders",
+  cities: "Founding cities",
+  naming: "Naming places",
+};
+// Minimal Feather-style line icons (stroke = currentColor), one per stage.
+const STAGE_ICONS = {
+  start: '<path d="M12 2a10 10 0 1 0 10 10A10 10 0 0 0 12 2z"/><path d="M2 12h20"/><path d="M12 2a15 15 0 0 1 0 20a15 15 0 0 1 0-20z"/>',
+  coast: '<path d="M2 8c2 0 2 2 4 2s2-2 4-2 2 2 4 2 2-2 4-2 2 2 4 2"/><path d="M2 14c2 0 2 2 4 2s2-2 4-2 2 2 4 2 2-2 4-2 2 2 4 2"/>',
+  rivers: '<path d="M3 4c4 2 1 6 5 8s1 6 5 8"/><path d="M21 6c-3 1-4 4-7 4"/>',
+  biome: '<circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M2 12h2M20 12h2M5 5l1.5 1.5M17.5 17.5L19 19M19 5l-1.5 1.5M6.5 17.5L5 19"/>',
+  countries: '<path d="M4 15s1-1 4-1 5 2 8 2 4-1 4-1V3s-1 1-4 1-5-2-8-2-4 1-4 1z"/><path d="M4 22v-7"/>',
+  cities: '<path d="M21 10c0 6-9 12-9 12s-9-6-9-12a9 9 0 0 1 18 0z"/><circle cx="12" cy="10" r="3"/>',
+  naming: '<path d="M20.59 13.41l-7.17 7.17a2 2 0 0 1-2.83 0L2 12V2h10l8.59 8.59a2 2 0 0 1 0 2.82z"/><circle cx="7" cy="7" r="1.2"/>',
+};
+function stageIcon(stage) {
+  return `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">${STAGE_ICONS[stage] || STAGE_ICONS.start}</svg>`;
+}
+let loaderEl = null, loaderIconEl = null, loaderTextEl = null, loaderFillEl = null;
 function loader() {
   if (!loaderEl) {
     loaderEl = document.createElement("div");
     loaderEl.id = "gen-loader";
-    loaderEl.innerHTML = '<span class="gen-spinner"></span><span class="gen-text"></span>';
+    const row = document.createElement("div");
+    row.className = "gen-row";
+    loaderIconEl = document.createElement("span");
+    loaderIconEl.className = "gen-icon";
+    loaderTextEl = document.createElement("span");
+    loaderTextEl.className = "gen-text";
+    row.append(loaderIconEl, loaderTextEl);
+    const bar = document.createElement("div");
+    bar.className = "gen-bar";
+    bar.style.setProperty("--segs", String(STAGE_ORDER.length));
+    loaderFillEl = document.createElement("div");
+    loaderFillEl.className = "gen-fill";
+    bar.appendChild(loaderFillEl);
+    loaderEl.append(row, bar);
     document.body.appendChild(loaderEl);
   }
   return loaderEl;
 }
+// Name the stage being worked on now: swap its icon + present-tense line.
+function setLoaderStage(stage) {
+  loader();
+  loaderIconEl.innerHTML = stageIcon(stage);
+  loaderTextEl.textContent = `${STAGE_MSG[stage] || STAGE_MSG.start}…`;
+}
+// Snap path: icon + single line, bar hidden.
 function showLoader(stage = "start") {
   const el = loader();
-  el.querySelector(".gen-text").textContent = STAGE_LABELS[stage] || STAGE_LABELS.start;
+  el.classList.remove("buildup");
+  setLoaderStage(stage);
   el.classList.add("show");
+}
+// Progress bar — a "trickle toward a moving cap" model (the classic loading-bar
+// trick): a rAF loop eases the fill EXPONENTIALLY toward a ceiling instead of
+// snapping, so it glides rather than jumping through the fast early passes and
+// keeps creeping during the long country pass. The ceiling is the END of the
+// stage being worked on right now; each completed pass raises it to the next
+// segment. On `done` it eases the rest of the way to full, then the loader hides.
+const BAR_TAU = 820;          // ease time-constant (ms) — higher = slower, more deliberate
+const FILL_AHEAD = 0.85;      // trickle only this far into the active segment, then peg
+const N_STAGES = STAGE_ORDER.length;
+let barProgress = 0, barCap = 0, barRAF = 0, barLast = 0, barDone = false;
+function barLoop() {
+  cancelAnimationFrame(barRAF);
+  const tick = (now) => {
+    const dt = barLast ? Math.min(120, now - barLast) : 16;
+    barLast = now;
+    barProgress += (barCap - barProgress) * (1 - Math.exp(-dt / BAR_TAU));
+    loaderFillEl.style.width = `${(barProgress * 100).toFixed(2)}%`;
+    if (!barDone) barRAF = requestAnimationFrame(tick);
+  };
+  barRAF = requestAnimationFrame(tick);
+}
+// Build-up path: full bar at 0, coast as the first active stage. The ceiling sits
+// PART-WAY into the active segment (FILL_AHEAD), leaving headroom — so a slow pass
+// pegs just short of its boundary (the sheen keeps it alive) and completing the
+// pass visibly steps the bar the rest of the way, rather than pegging dead-full.
+function loaderReset() {
+  const el = loader();
+  el.classList.add("buildup", "show");
+  buildUpDone.clear();
+  cancelAnimationFrame(barRAF);
+  barProgress = 0; barCap = FILL_AHEAD / N_STAGES; barLast = 0; barDone = false;
+  loaderFillEl.style.transition = "none";
+  loaderFillEl.style.width = "0%";
+  setLoaderStage(STAGE_ORDER[0]);
+  barLoop();
+}
+// One pass landed: raise the ceiling past this segment's boundary and part-way into
+// the NOW-active next stage, and name that pass — exactly what the worker starts
+// crunching next, keeping the line honest. The ease through the boundary is the
+// "fill to full once done" step for the segment that just finished.
+function loaderAdvance(stageKey) {
+  const i = STAGE_ORDER.indexOf(stageKey);
+  if (i < 0) return;
+  const next = STAGE_ORDER[i + 1];
+  if (next) {
+    barCap = Math.max(barCap, (i + 1 + FILL_AHEAD) / N_STAGES);
+    setLoaderStage(next);
+  }
+}
+// `done`: stop the trickle and ease cleanly to full with a CSS transition, then
+// run the callback (hide the loader) once it lands.
+function loaderFinish(cb) {
+  barDone = true;
+  cancelAnimationFrame(barRAF);
+  loaderFillEl.style.transition = "width 0.4s cubic-bezier(0.4, 0, 0.2, 1)";
+  requestAnimationFrame(() => { loaderFillEl.style.width = "100%"; });
+  setTimeout(() => cb && cb(), 430);
 }
 function hideLoader() {
   loaderEl?.classList.remove("show");
@@ -221,13 +429,30 @@ function featureSig() {
   ].join("|");
 }
 
+// Open a build-up: clear the old world, drop to the live relief backdrop with
+// every vector layer hidden + pre-zeroed, arm the fade, and front the segmented
+// bar at stage 0. Each layer then fades in as its pass streams back (see the
+// worker `layer` handler). The terrain shader stays live underneath throughout.
+function startBuildUp() {
+  previewActive = false;          // the build-up owns the reveal now, not the preview path
+  for (const name of Object.values(NAME_TO_SOURCE)) map.getSource(name)?.setData(emptyFC());
+  captureAndZeroOpacities();                    // snapshot + zero every layer's opacity, arm the fade
+  showReliefPreview(map, terrain.id);          // terrain visible, every feature layer hidden
+  loaderReset();
+}
+
 function requestFeatures() {
   if (baked) return;              // frozen world — the worker is gone
   const sig = featureSig();
   if (sig === lastSig) return;
   lastSig = sig;
-  showLoader();                   // narrated stage-by-stage as the worker reports in
-  enterPreview();                 // hold the relief preview until the fresh layers render
+  const cs = coastSubSig();
+  const buildUp = firstGen || cs !== lastCoastSig;
+  lastCoastSig = cs;
+  activeBuildUp = buildUp;
+  pending = {};
+  if (buildUp) startBuildUp();    // full rebuild: clear + segmented bar + per-layer reveal
+  else { showLoader(); enterPreview(); }  // downstream snap: single line + held relief preview
   const c = recipe.countries;
   worker.postMessage({
     type: "generate",
@@ -267,32 +492,60 @@ worker.onmessage = (e) => {
   if (msg.type === "error") {
     console.warn("[features] worker error:", msg.message);
     hideLoader();
-    if (previewActive) restorePreview();   // don't strand the world on the relief preview
+    if (activeBuildUp) { activeBuildUp = false; restoreOpacities(); setOpacityTransitions(SNAP); applyStyle(map, terrain, currentStyle, layerVisibility); }
+    else if (previewActive) restorePreview();   // don't strand the world on the relief preview
     return;
   }
-  // Stage narration for the loader — ignore steps from a superseded request.
-  if (msg.type === "progress") { if (msg.id >= featReqId) showLoader(msg.stage); return; }
-  if (msg.type !== "features") return;
-  if (msg.id < featAckId) return;          // a newer response already landed
+  // Snap-path stage narration — ignore steps from a superseded request, and never
+  // touch the line while a build-up owns the loader (its bar drives the text).
+  if (msg.type === "progress") { if (msg.id === featReqId && !activeBuildUp) showLoader(msg.stage); return; }
+
+  if (msg.type === "layer") {
+    if (msg.id !== featReqId) return;          // a newer request superseded this run
+    featAckId = msg.id;
+    pending[msg.name] = msg.data;
+    map.getSource(NAME_TO_SOURCE[msg.name])?.setData(msg.data || emptyFC());
+    if (msg.count != null && LAYER_COUNT[msg.name]) setCounts({ [LAYER_COUNT[msg.name]]: msg.count });
+    // Build-up only: fill the bar + fade in this pass's layers the moment it lands.
+    if (activeBuildUp) {
+      const seg = LAYER_COMPLETES_SEG[msg.name];
+      if (seg && !buildUpDone.has(seg)) {
+        buildUpDone.add(seg);
+        loaderAdvance(seg);
+        for (const id of SEG_LAYERS[seg]) revealLayer(id);
+      }
+    }
+    return;
+  }
+
+  if (msg.type !== "done") return;
+  if (msg.id !== featReqId) return;            // a newer request superseded this run
   featAckId = msg.id;
 
-  const payload = {
-    coast: msg.coast, land: msg.land, lakes: msg.lakes, rivers: msg.rivers,
-    countries: msg.countries, cities: msg.cities, countryLabels: msg.countryLabels,
-    oceanLabels: msg.oceanLabels, continentLabels: msg.continentLabels,
-    biomes: msg.biomes,
-  };
-  applyFeatures(payload);
-
-  // Generation done. If we're holding the relief preview, keep it up until the
-  // just-set geometry has actually rendered, then restore the style + drop the
-  // loader (see revealWhenRendered). Otherwise just drop the loader.
-  if (previewActive) revealWhenRendered();
-  else hideLoader();
+  if (activeBuildUp) {
+    // Restore the exact target presentation: bring every layer's opacity back to
+    // its captured target (fading in the place-name labels — still on the FADE
+    // transition — as the final flourish), then applyStyle for visibility/colors
+    // (its explicit preset opacities win). A beat later we re-zero the transitions
+    // so style switches stay instant again.
+    restoreOpacities();
+    applyStyle(map, terrain, currentStyle, layerVisibility);
+    setTimeout(() => setOpacityTransitions(SNAP), FADE.duration + 60);
+    loaderFinish(hideLoader);   // ease the bar to full, then drop the loader
+    activeBuildUp = false;
+  } else if (previewActive) {
+    // Snap: keep the relief preview up until the streamed geometry has rendered,
+    // then restore the style + drop the loader (see revealWhenRendered).
+    revealWhenRendered();
+  } else {
+    hideLoader();
+  }
+  // (the four counters are already fed live from each pass's `layer` count above)
 
   // Keep the live GeoJSON around so a bundle can freeze exactly what's on screen,
   // and release anyone awaiting the first generation (e.g. an early bake click).
-  lastFeatures = payload;
+  firstGen = false;
+  lastFeatures = pending;
   while (featureWaiters.length) featureWaiters.shift()(lastFeatures);
 };
 
@@ -733,9 +986,10 @@ function syncHash() {
 // world; it only re-presents it, persists the choice, and refreshes the link.
 function setMapStyle(id) {
   currentStyle = normalizeStyle(id);
-  // While the relief preview is up (a regen is in flight) don't reveal the stale
-  // layers — the pending reveal applies the now-current style once they're fresh.
-  if (!previewActive) applyStyle(map, terrain, currentStyle, layerVisibility);
+  // While a regen is in flight (relief preview held, or a build-up streaming in)
+  // don't reveal stale/half-built layers — the pending reveal / final applyStyle
+  // re-presents under the now-current style once the world is fresh.
+  if (!previewActive && !activeBuildUp) applyStyle(map, terrain, currentStyle, layerVisibility);
   applyBackground();
   persistStyle(currentStyle);
   picker.setActive(currentStyle);
@@ -747,8 +1001,8 @@ function setMapStyle(id) {
 // remember the choice. Never touches the recipe or the world geometry.
 function setLayerVisibility(vis) {
   // Same as setMapStyle: defer to the pending reveal if we're mid-regen so the
-  // preview isn't broken by un-hiding stale layers.
-  if (!previewActive) applyStyle(map, terrain, currentStyle, vis);
+  // preview / build-up isn't broken by un-hiding stale or half-built layers.
+  if (!previewActive && !activeBuildUp) applyStyle(map, terrain, currentStyle, vis);
   persistLayerVisibility(vis);
   scheduleAutosave();
 }
@@ -930,10 +1184,47 @@ document.body.appendChild(picker.el);
 // shader-only and instant, matching the legacy app.
 const statsEl = document.getElementById("stats");
 let statsTimer = 0;
+// The strip carries two parts: the live feature tally (countries · cities ·
+// rivers · lakes), fed incrementally from the worker's per-pass counts, and the
+// land/ocean split from the elevation field. Either can update independently, so
+// each owns a cached string and renderStats stitches them.
+const counts = { countries: null, cities: null, rivers: null, lakes: null };
+let landOceanStr = "";
+function renderStats() {
+  if (!statsEl) return;
+  const n = (v) => v.toLocaleString();
+  const tally = [
+    counts.countries != null && `${n(counts.countries)} countries`,
+    counts.cities != null && `${n(counts.cities)} cities`,
+    counts.rivers != null && `${n(counts.rivers)} rivers`,
+    counts.lakes != null && `${n(counts.lakes)} lakes`,
+  ].filter(Boolean).join(" · ");
+  statsEl.textContent = [tally, landOceanStr].filter(Boolean).join(" · ");
+}
+// Roll each counter up to its new value (~500ms ease-out) so features visibly
+// tally as the worker reports each pass in, rather than snapping to the total.
+const countAnims = new Map();
+function setCounts(partial) {
+  for (const [key, to] of Object.entries(partial)) {
+    if (!(key in counts)) continue;
+    cancelAnimationFrame(countAnims.get(key) || 0);
+    const from = counts[key] ?? 0;
+    if (from === to) { counts[key] = to; renderStats(); continue; }
+    const t0 = performance.now();
+    const tick = (now) => {
+      const k = Math.min(1, (now - t0) / 500);
+      const e = 1 - (1 - k) * (1 - k);          // ease-out
+      counts[key] = Math.round(from + (to - from) * e);
+      renderStats();
+      if (k < 1) countAnims.set(key, requestAnimationFrame(tick));
+    };
+    countAnims.set(key, requestAnimationFrame(tick));
+  }
+}
 function refreshStats() {
   const lf = landFraction(recipe.world.invert ? 1 : 0, recipe.world.water);
-  if (lf == null || !statsEl) return;
-  statsEl.textContent = `land ${(lf * 100).toFixed(1)}% · ocean ${((1 - lf) * 100).toFixed(1)}%`;
+  if (lf != null) landOceanStr = `land ${(lf * 100).toFixed(1)}% · ocean ${((1 - lf) * 100).toFixed(1)}%`;
+  renderStats();
 }
 function scheduleStats() {
   clearTimeout(statsTimer);
