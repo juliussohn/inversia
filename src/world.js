@@ -122,7 +122,7 @@ function featureSig() {
   return [
     recipe.world.water, recipe.world.invert ? 1 : 0,
     recipe.lakes.minSize, recipe.rivers.threshold,
-    recipe.seed.seed, c.count, c.ambition, c.ridge, c.river, c.seaCross, c.wilderness,
+    recipe.seed.seed, c.count, c.areaSkew, c.ambition, c.ridge, c.river, c.seaCross,
     ci.density, ci.spacing,
   ].join("|");
 }
@@ -141,11 +141,11 @@ function requestFeatures() {
     threshold: recipe.rivers.threshold,
     seed: recipe.seed.seed,
     count: c.count,
+    areaSkew: c.areaSkew,
     ambition: c.ambition,
     ridge: c.ridge,
     river: c.river,
     seaCross: c.seaCross,
-    wilderness: c.wilderness,
     density: recipe.cities.density,
     spacing: recipe.cities.spacing,
   });
@@ -196,8 +196,9 @@ function addFeatureLayers() {
   });
 
   // Country territories (Phase 6) — drawn as outlines only, no fill. The border
-  // traces each country's edge; wilderness carries no feature so it simply has no
-  // outline. Sits above the land fill and below the lakes/coast/rivers so water
+  // traces each country's edge; every land cell belongs to some country (no
+  // wilderness), so a line appears only between two states. Sits above the land
+  // fill and below the lakes/coast/rivers so water
   // features and the coastline always read on top. Width + opacity are the per-
   // style levers (subtle over the terrain in Relief, bold in Political, hidden in
   // Minimal — see styles.js).

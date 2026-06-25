@@ -15,7 +15,7 @@
  *
  *  Protocol:
  *    main → worker : { type:"generate", id, water, invert, minSize, threshold,
- *                      seed, count, ambition, ridge, river, seaCross, wilderness,
+ *                      seed, count, areaSkew, ambition, ridge, river, seaCross,
  *                      density, spacing }
  *    worker → main : { type:"features", id, coast, land, lakes, rivers,
  *                      countries, cities, stats }
@@ -70,19 +70,19 @@ self.onmessage = async (e) => {
     // affinity. They depend on water/invert (the field) plus the seed and every
     // country knob, so they re-run only when one of those actually moves.
     const countrySig =
-      `${msg.water}|${msg.invert ? 1 : 0}|${msg.seed}|${msg.count}|${msg.ambition}|` +
-      `${msg.ridge}|${msg.river}|${msg.seaCross}|${msg.wilderness}`;
+      `${msg.water}|${msg.invert ? 1 : 0}|${msg.seed}|${msg.count}|${msg.areaSkew}|${msg.ambition}|` +
+      `${msg.ridge}|${msg.river}|${msg.seaCross}`;
     if (countrySig !== countryCache.sig) {
       const { countries, owner, isLand, stats } = computeCountries(f, flowCache.flow, {
         water: msg.water,
         invert: msg.invert,
         seed: msg.seed,
         count: msg.count,
+        areaSkew: msg.areaSkew,
         ambition: msg.ambition,
         ridge: msg.ridge,
         river: msg.river,
         seaCross: msg.seaCross,
-        wilderness: msg.wilderness,
       });
       countryCache = { sig: countrySig, countries, owner, isLand, stats };
     }
