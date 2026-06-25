@@ -267,6 +267,57 @@ fresh world; edits survive in a downloaded bundle.
 
 ---
 
+## Phase 11 — Map style switcher (Relief / Political-Flat / Minimal)
+
+**Why now:** Last because a true preset switcher needs every layer to exist — land
+fill (Phase 4), country fills (Phase 6), labels (Phase 9). Placed after the others
+exactly as requested; all dependencies are satisfied by Phase 10.
+
+**Do:**
+- `src/world/styles.js`: define **3 declarative style-preset objects** (app-level,
+  shared across all worlds), each a plain bundle:
+  `{ terrain: {mode, params}, layers: { landFill, borders, countryFills, rivers,
+  lakes, cities, labels: {visible, color, width, …} } }`.
+  - **Relief** (default): live hypsometric terrain custom layer + hillshade, subtle
+    borders, rivers/lakes/labels — today's look.
+  - **Political / Flat**: terrain layer hidden; base land fill + per-country fills;
+    bold borders; prominent labels — atlas look.
+  - **Minimal**: two-tone land/water; only major labels; hairline or no borders.
+- `applyStyle(map, preset)`: walk the preset and apply via
+  `setLayoutProperty`/`setPaintProperty` for vector layers and terrain custom-layer
+  uniforms/visibility. **Diff-based** against the current preset; **instant snap**
+  (no transition). ONE persistent MapLibre style — never `setStyle()`; the custom
+  terrain layer and live GeoJSON sources stay mounted throughout.
+- **Always-mounted land-fill layer**: ensure the Phase 4 coastline land polygon is
+  added as a fill layer that's just toggled (hidden in Relief, shown in flat styles);
+  country fills (Phase 6) paint on top; wilderness shows the base land color.
+- **Active style = view preference** (NOT in the world recipe): encode in the URL
+  (so a shared link pins world + style) and remember in `localStorage`. Reseeding
+  keeps the style; switching style never touches the world.
+- **UI:** a small segmented control / dropdown to pick the style; default Relief.
+- Applies identically on **globe and flat map** (same style system, same presets).
+
+**Out of scope:** per-style live tweaking / panel overrides; saving custom named
+styles (deferred — would be its own phase). Presets are fixed.
+
+**Bake interaction:** style-independent. Baking always snapshots the **relief**
+terrain tiles (source of truth) and bundles all vector layers; the active style is
+only a recorded view preference, so a baked world can still switch styles.
+
+**Files:** new `src/world/styles.js`; a style-picker control; ensure land-fill layer
+exists from Phase 4; small wiring in the map/recipe/URL layer.
+
+**Acceptance:** switching Relief→Political→Minimal instantly re-presents the same
+world (terrain hides/shows, fills and borders change, label density changes);
+the choice survives reload (URL + localStorage); reseeding the world keeps the
+chosen style; both globe and flat map honor the style.
+
+> **Optional earlier slice:** a bare Relief-vs-Flat *terrain* toggle could land right
+> after Phase 4 (land fill exists), but full "Political" needs Phases 6 + 9. Kept at
+> Phase 11 per request so all three presets ship complete.
+
+---
+
 ## Locked decisions (the 14 forks behind this plan)
 
 1. **MapLibre GL JS v5**, full adoption (real GeoJSON + data-driven styling).
@@ -290,6 +341,12 @@ fresh world; edits survive in a downloaded bundle.
 13. **Retire the custom globe** for MapLibre native globe projection.
 14. Build order = **de-risk first** (shell + terrain port), then generation, then
     recipe/bake/naming/editing.
+15. **Style switcher (Phase 11)** = full presentation presets (terrain mode + layer
+    visibility + paint) as **declarative data**, applied by diffing one persistent
+    style (no `setStyle`). Ship **3 fixed presets** (Relief / Political-Flat /
+    Minimal), **instant** switch, **active style is a view preference** (URL +
+    localStorage, not in the recipe). No per-style tweaking / custom-style saving
+    yet. Flat styles rely on an always-mounted land-fill layer from Phase 4.
 
 ### Known deferrals (conscious, not surprises)
 - **Deep-zoom coastline crispness:** z4 source goes blocky near street-level zoom;
