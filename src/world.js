@@ -118,10 +118,12 @@ let lastSig = "";        // params last sent — skip regen when nothing relevan
 // when none of them moved.
 function featureSig() {
   const c = recipe.countries;
+  const ci = recipe.cities;
   return [
     recipe.world.water, recipe.world.invert ? 1 : 0,
     recipe.lakes.minSize, recipe.rivers.threshold,
     recipe.seed.seed, c.count, c.ambition, c.ridge, c.river, c.seaCross, c.wilderness,
+    ci.density, ci.spacing,
   ].join("|");
 }
 
@@ -144,6 +146,8 @@ function requestFeatures() {
     river: c.river,
     seaCross: c.seaCross,
     wilderness: c.wilderness,
+    density: recipe.cities.density,
+    spacing: recipe.cities.spacing,
   });
 }
 
@@ -164,6 +168,7 @@ worker.onmessage = (e) => {
   map.getSource("lakes")?.setData(msg.lakes);
   map.getSource("rivers")?.setData(msg.rivers);
   if (msg.countries) map.getSource("countries")?.setData(msg.countries);
+  if (msg.cities) map.getSource("cities")?.setData(msg.cities);
 };
 
 // Coast stroke + lake fill, styled to read as one world. The terrain shader
@@ -177,6 +182,7 @@ function addFeatureLayers() {
   map.addSource("lakes", { type: "geojson", data: emptyFC() });
   map.addSource("coast", { type: "geojson", data: emptyFC() });
   map.addSource("rivers", { type: "geojson", data: emptyFC() });
+  map.addSource("cities", { type: "geojson", data: emptyFC() });
 
   // Always-mounted land fill — hidden in Relief (the terrain shader paints the
   // land), shown in the flat presets where it IS the land. Sits just above the
@@ -252,6 +258,34 @@ function addFeatureLayers() {
     },
   });
 
+  // Cities (Phase 7) — the populated layer, topmost so settlements read over every
+  // other feature. Two generated marker images: a plain dot for ordinary cities and
+  // a ringed dot for capitals. `icon-allow-overlap:false` turns on MapLibre's label
+  // collision, and `symbol-sort-key:rank` (1 = biggest) makes the larger cities win
+  // that space — so a dense region shows only its top cities zoomed out and reveals
+  // the rest as you zoom in. Size steps up per tier and per zoom. Names are Phase 9;
+  // until then the marker tier/rank stands in (no text → no glyphs needed yet).
+  registerCityIcons();
+  map.addLayer({
+    id: "cities-symbol",
+    type: "symbol",
+    source: "cities",
+    layout: {
+      "icon-image": ["match", ["get", "tier"], "capital", "city-capital", "city-dot"],
+      "icon-size": [
+        "interpolate", ["linear"], ["zoom"],
+        0, ["match", ["get", "tier"], "capital", 0.55, "metropolis", 0.45, "city", 0.32, 0.22],
+        4, ["match", ["get", "tier"], "capital", 0.85, "metropolis", 0.65, "city", 0.46, 0.32],
+        8, ["match", ["get", "tier"], "capital", 1.25, "metropolis", 0.95, "city", 0.7, 0.5],
+      ],
+      "icon-allow-overlap": false,
+      "icon-ignore-placement": false,
+      "icon-padding": 2,
+      "symbol-sort-key": ["get", "rank"],
+    },
+    paint: { "icon-opacity": 1 },
+  });
+
   // Style switches are an INSTANT snap (no cross-fade): zero out the paint
   // transitions on every property a preset touches so swapping Relief↔Political↔
   // Minimal re-presents the world immediately rather than dissolving through it.
@@ -263,10 +297,44 @@ function addFeatureLayers() {
     ["lakes-line", "line-color-transition"], ["lakes-line", "line-opacity-transition"],
     ["coast-line", "line-color-transition"], ["coast-line", "line-opacity-transition"],
     ["rivers-line", "line-color-transition"], ["rivers-line", "line-opacity-transition"],
+    ["cities-symbol", "icon-opacity-transition"],
     ["bg", "background-color-transition"],
   ]) {
     try { map.setPaintProperty(layer, prop, snap); } catch { /* ignore */ }
   }
+}
+
+// ---- city marker icons ---------------------------------------------------
+// Drawn once into an offscreen canvas and registered with the map. Plain RGBA
+// (not SDF) — a light fill with a dark outline reads over both the relief terrain
+// and the flat paper land. Rendered at 2× and added with pixelRatio 2 so the
+// markers stay crisp; `icon-size` scales them per tier/zoom.
+function cityDot(diameter, ring) {
+  const s = diameter * 2; // 2× supersample
+  const cv = document.createElement("canvas");
+  cv.width = cv.height = s;
+  const ctx = cv.getContext("2d");
+  const cx = s / 2, cy = s / 2;
+  const r = s / 2 - 2.5;
+  if (ring) {
+    // capital: a dark outer ring around a light disc, with a small dark centre
+    ctx.beginPath(); ctx.arc(cx, cy, r, 0, Math.PI * 2);
+    ctx.fillStyle = "#7a1f1f"; ctx.fill();
+    ctx.beginPath(); ctx.arc(cx, cy, r * 0.62, 0, Math.PI * 2);
+    ctx.fillStyle = "#fbf7ef"; ctx.fill();
+    ctx.beginPath(); ctx.arc(cx, cy, r * 0.28, 0, Math.PI * 2);
+    ctx.fillStyle = "#7a1f1f"; ctx.fill();
+  } else {
+    ctx.beginPath(); ctx.arc(cx, cy, r, 0, Math.PI * 2);
+    ctx.fillStyle = "#fbf7ef"; ctx.fill();
+    ctx.lineWidth = s * 0.14; ctx.strokeStyle = "#1a2230"; ctx.stroke();
+  }
+  return ctx.getImageData(0, 0, s, s);
+}
+
+function registerCityIcons() {
+  if (!map.hasImage("city-dot")) map.addImage("city-dot", cityDot(18, false), { pixelRatio: 2 });
+  if (!map.hasImage("city-capital")) map.addImage("city-capital", cityDot(22, true), { pixelRatio: 2 });
 }
 
 // ---- recipe → URL hash ---------------------------------------------------

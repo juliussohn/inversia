@@ -278,7 +278,10 @@ function stitch(sa, sb, vlon, vlat) {
  * @param {{water:number, invert:boolean, seed:number, count:number,
  *          ambition:number, seaCross:number, wilderness:number,
  *          ridge:number, river:number}} opts
- * @returns {{countries: object, stats: {countries:number}}}
+ * @returns {{countries: object, owner: Int32Array, isLand: Uint8Array,
+ *            stats: {countries:number}}}  `owner`/`isLand` feed the city pass
+ *          (Phase 7): each city reads its allegiance straight off the territory it
+ *          falls on, so it never disagrees with the borders drawn here.
  */
 export function computeCountries(field, flow, opts) {
   const { elev, W, H } = field;
@@ -293,7 +296,7 @@ export function computeCountries(field, flow, opts) {
   const isLand = new Uint8Array(N);
   let landCount = 0;
   for (let i = 0; i < N; i++) if (eff[i] > level) { isLand[i] = 1; landCount++; }
-  if (!landCount) return { countries: emptyFC(), stats: { countries: 0 } };
+  if (!landCount) return { countries: emptyFC(), owner: new Int32Array(N).fill(-1), isLand, stats: { countries: 0 } };
 
   // --- per-cell terrain inputs ---------------------------------------------
   // slope: steepest relief to an 8-neighbour, normalised → the ridge penalty.
@@ -365,7 +368,7 @@ export function computeCountries(field, flow, opts) {
   const rand = mulberry32((seed >>> 0) ^ 0x9e3779b9);
   const caps = scatterCapitals({ N, W, H, isLand, habit, landCount, count, rand });
   const nCaps = caps.length;
-  if (!nCaps) return { countries: emptyFC(), stats: { countries: 0 } };
+  if (!nCaps) return { countries: emptyFC(), owner: new Int32Array(N).fill(-1), isLand, stats: { countries: 0 } };
 
   // ambition: spread controlled by the recipe. spread 0 → every capital equal;
   // spread 1 → ambitions span ~0.4×..2.5×, so the cheapest-expanding states grow
@@ -413,6 +416,8 @@ export function computeCountries(field, flow, opts) {
 
   return {
     countries: { type: "FeatureCollection", features },
+    owner,
+    isLand,
     stats: { countries: claimed },
   };
 }
