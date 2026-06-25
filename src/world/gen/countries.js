@@ -18,21 +18,31 @@
  *       close to the coast, close to a major river. Capitals favour these spots,
  *       exactly where real settlement concentrates.
  *
- *    3. CAPITALS. Dart-throwing weighted by habitability with a min-spacing reject,
- *       so capitals land on good ground but stay spread out. Each capital gets an
- *       "ambition" weight (spread controlled by the recipe) that scales how cheaply
- *       it expands — this is what makes sizes deliberately UNEVEN.
+ *    3. CAPITALS. Allocated PER LANDMASS, not globally — this is what makes big
+ *       continents host big states and water-surrounded masses fragment. Each
+ *       landmass above a min-area floor is guaranteed one capital (sovereignty);
+ *       the rest of the recipe's `count` budget is shared out as EXTRAS by
+ *       area^areaSkew (sub-linear, so a 100× bigger mass gets only ~10× the
+ *       capitals → ~10× bigger countries on average). Within each mass, capitals
+ *       are dart-thrown by habitability with an in-mass min-spacing reject. `count`
+ *       is a FLOOR: if there are more eligible masses than the budget, every one
+ *       still keeps its single capital. Each capital also gets a random "ambition"
+ *       weight that scales how cheaply it expands → uneven sizes WITHIN a mass.
  *
  *    4. GROWTH. One multi-source Dijkstra from all capitals at once. Step cost =
  *       distance × a terrain penalty (ridges + rivers cost more to cross) ÷ the
  *       owner's ambition. Water may be crossed but only for a few cells and at a
- *       steep cost (archipelago states, never transoceanic empires). Cells past a
- *       cost cutoff are never claimed → WILDERNESS. Whoever reaches a cell first
- *       (cheapest) owns it; fronts meeting on ridges/rivers/coasts draw the border.
+ *       steep cost (archipelago states, never transoceanic empires). There is NO
+ *       cost cutoff: fronts run until they meet, so masses fill completely and no
+ *       land is left ownerless. Whoever reaches a cell first (cheapest) owns it;
+ *       fronts meeting on ridges/rivers/coasts draw the border. A final orphan pass
+ *       floods ownership across open water (ignoring the strait cap) so any island
+ *       too remote for growth to reach still inherits the nearest capital — every
+ *       land cell ends up owned, so there is no WILDERNESS.
  *
  *    5. VECTORIZE. Per country, trace only its POLITICAL borders — the cell edges
- *       where it abuts a DIFFERENT owner on land (a neighbouring state or
- *       wilderness). Edges facing the SEA are skipped, so the coast carries no
+ *       where it abuts a DIFFERENT owner on land (a neighbouring state). Edges
+ *       facing the SEA are skipped, so the coast carries no
  *       border line: real political maps don't ink a boundary along the shore, and
  *       drawing one here just doubled the coastline stroke. A shared frontier
  *       between two states traces the identical corner path from both sides, so it
@@ -55,6 +65,14 @@ const RIVER_BORDER_KM2 = 60000;
 // Caps even a cheap-sea world to straits, never oceans (≈8 cells ≈ a narrow sea
 // at this ~0.18° field), so archipelago states form but transoceanic ones cannot.
 const SEA_SPAN_MAX = 8;
+
+// Smallest landmass that earns its own capital → its own country. Measured in
+// REAL area (cos-latitude-weighted cells, so a polar sliver of many tiny cells
+// doesn't qualify on raw count). Doubles as the sovereignty floor: a mass this
+// big or bigger is always a state (a recognizable island, not a mid-ocean reef);
+// anything smaller is folded into the nearest capital by the orphan pass.
+// ~a dozen equatorial cells at this ~0.18° field.
+const MIN_AREA = 12;
 
 // Slope (metres of relief to the steepest neighbour) that saturates the ridge
 // penalty — beyond this a crossing is "as mountainous as it gets".
@@ -121,7 +139,7 @@ function mulberry32(seed) {
 
 // ---- trace the global land-border network (interior edges only) ------------
 // Emit a segment on every cell edge whose two sides are DIFFERENT-owned LAND —
-// state-vs-state or state-vs-wilderness. Sea edges are skipped, so the coast
+// always state-vs-state now that every land cell is owned. Sea edges are skipped, so the coast
 // carries no line. Endpoints are grid CORNERS, and each edge is visited once, so
 // a shared frontier is a single chain (no doubled stroke). The antimeridian wrap
 // column is skipped, leaving the same hairline mid-Pacific gap as the coast layer.
@@ -276,9 +294,12 @@ function stitch(sa, sb, vlon, vlat) {
  * @param {{W:number,H:number,recv:Int32Array,acc:Float64Array}} flow  hydrology
  *        (used for the river-border affinity); pass null to skip river borders.
  * @param {{water:number, invert:boolean, seed:number, count:number,
- *          ambition:number, seaCross:number, wilderness:number,
+ *          areaSkew:number, ambition:number, seaCross:number,
  *          ridge:number, river:number}} opts
- * @returns {{countries: object, stats: {countries:number}}}
+ * @returns {{countries: object, owner: Int32Array, isLand: Uint8Array,
+ *            stats: {countries:number}}}  `owner`/`isLand` feed the city pass
+ *          (Phase 7): each city reads its allegiance straight off the territory it
+ *          falls on, so it never disagrees with the borders drawn here.
  */
 export function computeCountries(field, flow, opts) {
   const { elev, W, H } = field;
@@ -293,7 +314,7 @@ export function computeCountries(field, flow, opts) {
   const isLand = new Uint8Array(N);
   let landCount = 0;
   for (let i = 0; i < N; i++) if (eff[i] > level) { isLand[i] = 1; landCount++; }
-  if (!landCount) return { countries: emptyFC(), stats: { countries: 0 } };
+  if (!landCount) return { countries: emptyFC(), owner: new Int32Array(N).fill(-1), isLand, stats: { countries: 0 } };
 
   // --- per-cell terrain inputs ---------------------------------------------
   // slope: steepest relief to an 8-neighbour, normalised → the ridge penalty.
@@ -361,27 +382,36 @@ export function computeCountries(field, flow, opts) {
     habit[i] = 0.15 + flat * (0.5 + 0.9 * coast + 0.7 * river);
   }
 
-  // --- scatter capitals ----------------------------------------------------
+  // --- allocate + place capitals (per landmass) ----------------------------
+  // Capitals are budgeted PER landmass: every mass ≥ MIN_AREA is guaranteed one,
+  // and the rest of `count` is shared out by area^areaSkew so big continents end
+  // up with proportionally FEWER (hence larger) states while small masses stay
+  // dense. See allocateCapitals.
   const rand = mulberry32((seed >>> 0) ^ 0x9e3779b9);
-  const caps = scatterCapitals({ N, W, H, isLand, habit, landCount, count, rand });
+  const areaSkew = clampRange(opts.areaSkew, 0.3, 1);
+  const { caps, capSpread } = allocateCapitals({ N, W, H, isLand, landId, habit, count, areaSkew, rand });
   const nCaps = caps.length;
-  if (!nCaps) return { countries: emptyFC(), stats: { countries: 0 } };
+  if (!nCaps) return { countries: emptyFC(), owner: new Int32Array(N).fill(-1), isLand, stats: { countries: 0 } };
 
-  // ambition: spread controlled by the recipe. spread 0 → every capital equal;
-  // spread 1 → ambitions span ~0.4×..2.5×, so the cheapest-expanding states grow
-  // several times larger than the timid ones — the deliberate size unevenness.
+  // ambition: the recipe's "size spread" sets the magnitude, but each capital's
+  // share is scaled by `capSpread` — its landmass's variance budget. Small masses
+  // get ~0 (even partition; the few states there come out similar-sized), big
+  // masses get the full spread (a real MIX of large and small states, not just
+  // uniformly-large ones). The cross-mass gradient still comes from area^areaSkew.
   const spread = clamp01(opts.ambition);
   const ambition = new Float64Array(nCaps);
-  for (let i = 0; i < nCaps; i++) ambition[i] = Math.exp((rand() - 0.5) * spread * 2.0);
+  for (let i = 0; i < nCaps; i++) ambition[i] = Math.exp((rand() - 0.5) * spread * 2.5 * capSpread[i]);
 
-  // --- grow territory (multi-source least-cost flood) ----------------------
+  // --- grow territory (multi-source least-cost flood, no cutoff) -----------
+  // Fronts run until they meet — no wilderness — then a final orphan pass folds
+  // any unreached speck into the nearest capital so every land cell is owned.
   const owner = growTerritory({
     N, W, H, isLand, slopeN, riverMask, caps, ambition,
     ridgeW: clamp01(opts.ridge) * 6,
     riverW: clamp01(opts.river) * 9,
     seaCost: 5 + clamp01(opts.seaCross) * 45,
-    maxDist: 70 + (1 - clamp01(opts.wilderness)) * 230, // wilderness 0 → ~300 (full), 1 → 70 (lots of wild)
   });
+  fillOrphans({ N, W, H, isLand, owner });
 
   // --- vectorize: one global border network -------------------------------
   // Trace every land edge between two DIFFERENT owners once, globally (not per
@@ -413,6 +443,8 @@ export function computeCountries(field, flow, opts) {
 
   return {
     countries: { type: "FeatureCollection", features },
+    owner,
+    isLand,
     stats: { countries: claimed },
   };
 }
@@ -420,6 +452,7 @@ export function computeCountries(field, flow, opts) {
 // ---- helpers --------------------------------------------------------------
 const emptyFC = () => ({ type: "FeatureCollection", features: [] });
 const clamp01 = (v) => (v < 0 ? 0 : v > 1 ? 1 : v);
+const clampRange = (v, lo, hi) => (!Number.isFinite(v) ? lo : v < lo ? lo : v > hi ? hi : v);
 
 // Multi-source BFS in cell steps. `isSource(c)` seeds distance 0; expansion is
 // confined to cells where `passable(c)` holds. Returns Float64 distances (cells),
@@ -447,46 +480,161 @@ function bfsDistance(N, W, H, isSource, passable) {
   return dist;
 }
 
-// Dart-throw capitals: pick a random land cell, accept with probability
-// habit/habitMax (so livable ground wins) AND only if it clears the min spacing
-// from every capital already placed. Spacing ≈ the radius implied by sharing the
-// land equally among `count` capitals, loosened so they actually fit.
-function scatterCapitals({ N, W, H, isLand, habit, landCount, count, rand }) {
-  let hmax = 0;
-  for (let i = 0; i < N; i++) if (habit[i] > hmax) hmax = habit[i];
-  if (hmax <= 0) return [];
+// Allocate capitals PER landmass, then place them within each mass.
+//
+// Quota: every landmass ≥ MIN_AREA is "eligible" and guaranteed one capital
+// (sovereignty). The leftover budget (count − #eligible, if positive) is shared
+// out as EXTRAS by area^areaSkew using the largest-remainder method, so size
+// scales sub-linearly with area — a big continent gets proportionally fewer
+// capitals (bigger states) and small masses stay dense (more, smaller states).
+// `count` is a FLOOR: if there are more eligible masses than the budget, each
+// still keeps its single capital and the realized total simply exceeds `count`.
+// Sub-MIN_AREA specks get nothing here; the orphan pass folds them into a
+// neighbour. All areas and spacings are cos-latitude-weighted so the converging
+// polar grid doesn't over-allocate. Returns { caps, capSpread } — capital cell
+// indices (index = owner id) and each capital's size-graded variance budget.
+function allocateCapitals({ N, W, H, isLand, landId, habit, count, areaSkew, rand }) {
+  let nLand = 0;
+  for (let c = 0; c < N; c++) if (landId[c] + 1 > nLand) nLand = landId[c] + 1;
+  if (!nLand) return { caps: [], capSpread: [] };
 
-  const spacing = Math.max(2, Math.sqrt(landCount / Math.max(1, count)) * 0.62);
+  // cos(latitude) per row — real area and east–west distance shrink toward the
+  // poles, where the grid's longitude cells converge. Reckoning area + spacing in
+  // these REAL units (not raw cells) stops the poles from collecting a crowd of
+  // capitals and shredding into slivers. Floored so the pole rows aren't exactly 0.
+  const cw = new Float64Array(H);
+  for (let y = 0; y < H; y++) {
+    const lat = (90 - ((y + 0.5) / H) * 180) * (Math.PI / 180);
+    cw[y] = Math.max(0.05, Math.cos(lat));
+  }
+
+  // real (weighted) area per landmass
+  const area = new Float64Array(nLand);
+  for (let c = 0; c < N; c++) if (isLand[c]) area[landId[c]] += cw[(c / W) | 0];
+
+  // eligible masses, largest first (so the best-effort floor favours big land)
+  const eligible = [];
+  for (let m = 0; m < nLand; m++) if (area[m] >= MIN_AREA) eligible.push(m);
+  if (!eligible.length) return { caps: [], capSpread: [] };
+  eligible.sort((a, b) => area[b] - area[a]);
+
+  // baseline one capital each, then distribute the extras by area^areaSkew
+  const quota = new Int32Array(nLand);
+  for (const m of eligible) quota[m] = 1;
+  let extras = count - eligible.length;
+  if (extras > 0) {
+    const w = eligible.map((m) => Math.pow(area[m], areaSkew));
+    let wsum = 0; for (const x of w) wsum += x;
+    const frac = [];
+    let used = 0;
+    for (let i = 0; i < eligible.length; i++) {
+      const exact = (extras * w[i]) / wsum;
+      const fl = Math.floor(exact);
+      quota[eligible[i]] += fl; used += fl;
+      frac.push([exact - fl, i]);
+    }
+    frac.sort((a, b) => b[0] - a[0]);            // largest-remainder gets the rest
+    for (let k = 0, rem = extras - used; k < rem && k < frac.length; k++) quota[eligible[frac[k][1]]] += 1;
+  }
+
+  // gather each eligible mass's cells once, then dart-throw within it
+  const cellsByMass = new Map();
+  for (const m of eligible) cellsByMass.set(m, []);
+  for (let c = 0; c < N; c++) if (isLand[c] && quota[landId[c]] > 0) cellsByMass.get(landId[c]).push(c);
+
+  const caps = [], capSpread = [];
+  for (const m of eligible) {
+    // variance budget grows with the mass's capital count: a 1–2-state mass stays
+    // even (≈0), a crowded continent gets the full spread (≈1) → small countries
+    // appear ALONGSIDE big ones on big land, while small masses partition evenly.
+    const spreadScale = Math.min(1, Math.max(0, (quota[m] - 2) / 8));
+    placeInMass({ cells: cellsByMass.get(m), q: quota[m], area: area[m], W, cw, habit, rand, caps, capSpread, spreadScale });
+  }
+  return { caps, capSpread };
+}
+
+// Place up to `q` capitals inside one landmass: habitability dart-throw with an
+// in-mass min spacing (≈ the real radius implied by sharing the mass among q).
+// Spacing is checked in REAL distance (longitude scaled by cos-lat) so capitals
+// spread evenly on the ground, not in distorted grid cells. Always emits at least
+// one capital (the sovereignty guarantee) even if spacing or habitability would
+// otherwise starve a tight little island. Tags each capital with `spreadScale`.
+function placeInMass({ cells, q, area, W, cw, habit, rand, caps, capSpread, spreadScale }) {
+  if (!cells || !cells.length || q <= 0) return;
+  let hmax = 0; for (const c of cells) if (habit[c] > hmax) hmax = habit[c];
+  if (hmax <= 0) hmax = 1;
+
+  const spacing = Math.max(1.5, Math.sqrt(area / q) * 0.62);
   const sp2 = spacing * spacing;
-  const caps = [];          // cell indices
-  const cx = [], cy = [];   // their grid coords, for the spacing test
   const wHalf = W / 2;
-  const maxAttempts = count * 4000;
+  const px = [], py = [], pcw = [];               // grid coords + row cos of placed caps
+  const picked = [];
+  const maxAttempts = q * 4000 + 200;
 
-  for (let a = 0; a < maxAttempts && caps.length < count; a++) {
-    const c = (rand() * N) | 0;
-    if (!isLand[c]) continue;
-    if (rand() > habit[c] / hmax) continue; // habitability rejection
+  for (let a = 0; a < maxAttempts && picked.length < q; a++) {
+    const c = cells[(rand() * cells.length) | 0];
+    if (rand() > habit[c] / hmax) continue;       // habitability rejection
     const x = c % W, y = (c / W) | 0;
     let ok = true;
-    for (let k = 0; k < caps.length; k++) {
-      let dx = Math.abs(x - cx[k]); if (dx > wHalf) dx = W - dx; // longitude wraps
-      const dy = y - cy[k];
-      if (dx * dx + dy * dy < sp2) { ok = false; break; }
+    for (let k = 0; k < px.length; k++) {
+      let dx = Math.abs(x - px[k]); if (dx > wHalf) dx = W - dx; // longitude wraps
+      const dxr = dx * 0.5 * (cw[y] + pcw[k]);     // east–west distance compressed by cos-lat
+      const dy = y - py[k];
+      if (dxr * dxr + dy * dy < sp2) { ok = false; break; }
     }
     if (!ok) continue;
-    caps.push(c); cx.push(x); cy.push(y);
+    picked.push(c); px.push(x); py.push(y); pcw.push(cw[y]);
   }
-  return caps;
+
+  // guarantee the sovereignty capital: fall back to the most habitable cell
+  if (!picked.length) {
+    let best = cells[0], bh = -1;
+    for (const c of cells) if (habit[c] > bh) { bh = habit[c]; best = c; }
+    picked.push(best);
+  }
+  for (const c of picked) { caps.push(c); capSpread.push(spreadScale); }
+}
+
+// Orphan pass — guarantee zero wilderness. Growth can't cross more than
+// SEA_SPAN_MAX cells of open water, so an island farther out than that (and below
+// MIN_AREA, hence no capital of its own) is left unowned. Flood ownership outward
+// from every already-owned land cell across ALL cells (water passable, sea cap
+// ignored) so each such speck inherits the nearest capital's allegiance. Water is
+// only a conduit here; its ownership is stripped again at the end.
+function fillOrphans({ N, W, H, isLand, owner }) {
+  const q = new Int32Array(N);
+  const seen = new Uint8Array(N);
+  let head = 0, tail = 0;
+  for (let c = 0; c < N; c++) if (owner[c] >= 0) { q[tail++] = c; seen[c] = 1; }
+  if (!tail) return;                              // no capitals at all
+
+  while (head < tail) {
+    const c = q[head++];
+    const o = owner[c];
+    const x = c % W, y = (c / W) | 0;
+    const nbr = [
+      y > 0 ? c - W : -1,
+      y < H - 1 ? c + W : -1,
+      x === 0 ? c + W - 1 : c - 1,
+      x === W - 1 ? c - W + 1 : c + 1,
+    ];
+    for (const n of nbr) {
+      if (n < 0 || seen[n]) continue;
+      seen[n] = 1;
+      if (owner[n] < 0) owner[n] = o;             // inherit nearest owner
+      q[tail++] = n;
+    }
+  }
+  for (let c = 0; c < N; c++) if (!isLand[c]) owner[c] = -1; // territory is land only
 }
 
 // Multi-source Dijkstra. Every capital starts at cost 0 owning its cell; the
 // cheapest front to reach a cell claims it. Step cost rewards staying on one
 // side of ridges/rivers and on land, divided by the owner's ambition so bolder
 // states spread further. Crossing water is allowed for up to SEA_SPAN_MAX cells
-// at `seaCost` each. Cells whose cost would exceed `maxDist` are never relaxed →
-// they stay wilderness (owner -1).
-function growTerritory({ N, W, H, isLand, slopeN, riverMask, caps, ambition, ridgeW, riverW, seaCost, maxDist }) {
+// at `seaCost` each. There is no cost cutoff: fronts run until they meet, so all
+// reachable land is claimed (any unreachable speck is handled by fillOrphans).
+function growTerritory({ N, W, H, isLand, slopeN, riverMask, caps, ambition, ridgeW, riverW, seaCost }) {
   const dist = new Float64Array(N).fill(Infinity);
   const owner = new Int32Array(N).fill(-1);
   const srun = new Int16Array(N); // consecutive sea cells on the best path here
@@ -530,7 +678,7 @@ function growTerritory({ N, W, H, isLand, slopeN, riverMask, caps, ambition, rid
         }
 
         const nd = dc + step / amb;
-        if (nd > maxDist || nd >= dist[n]) continue;
+        if (nd >= dist[n]) continue;
         dist[n] = nd; owner[n] = o; srun[n] = nrun;
         heap.push(nd, n);
       }

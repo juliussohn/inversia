@@ -15,9 +15,10 @@
  *
  *  Protocol:
  *    main → worker : { type:"generate", id, water, invert, minSize, threshold,
- *                      seed, count, ambition, ridge, river, seaCross, wilderness }
+ *                      seed, count, areaSkew, ambition, ridge, river, seaCross,
+ *                      density, spacing }
  *    worker → main : { type:"features", id, coast, land, lakes, rivers,
- *                      countries, stats }
+ *                      countries, cities, stats }
  *                    { type:"error",    id, message }
  *  The `id` lets the main thread ignore stale responses when a newer request has
  *  already been issued (e.g. fast successive slider settles).
@@ -27,6 +28,7 @@ import { loadField } from "./field.js";
 import { generate } from "./gen/coast.js";
 import { computeFlow, extractRivers } from "./gen/hydro.js";
 import { computeCountries } from "./gen/countries.js";
+import { computeCities } from "./gen/cities.js";
 
 let fieldPromise = null;
 const field = () => (fieldPromise ??= loadField());
@@ -34,7 +36,8 @@ const field = () => (fieldPromise ??= loadField());
 // Heavy-result caches, keyed by the params they actually depend on.
 let coastCache = { sig: "", coast: null, land: null, lakes: null, stats: null };
 let flowCache = { sig: "", flow: null };
-let countryCache = { sig: "", countries: null, stats: null };
+let countryCache = { sig: "", countries: null, owner: null, isLand: null, stats: null };
+let cityCache = { sig: "", cities: null, stats: null };
 
 self.onmessage = async (e) => {
   const msg = e.data;
@@ -67,21 +70,34 @@ self.onmessage = async (e) => {
     // affinity. They depend on water/invert (the field) plus the seed and every
     // country knob, so they re-run only when one of those actually moves.
     const countrySig =
-      `${msg.water}|${msg.invert ? 1 : 0}|${msg.seed}|${msg.count}|${msg.ambition}|` +
-      `${msg.ridge}|${msg.river}|${msg.seaCross}|${msg.wilderness}`;
+      `${msg.water}|${msg.invert ? 1 : 0}|${msg.seed}|${msg.count}|${msg.areaSkew}|${msg.ambition}|` +
+      `${msg.ridge}|${msg.river}|${msg.seaCross}`;
     if (countrySig !== countryCache.sig) {
-      const { countries, stats } = computeCountries(f, flowCache.flow, {
+      const { countries, owner, isLand, stats } = computeCountries(f, flowCache.flow, {
         water: msg.water,
         invert: msg.invert,
         seed: msg.seed,
         count: msg.count,
+        areaSkew: msg.areaSkew,
         ambition: msg.ambition,
         ridge: msg.ridge,
         river: msg.river,
         seaCross: msg.seaCross,
-        wilderness: msg.wilderness,
       });
-      countryCache = { sig: countrySig, countries, stats };
+      countryCache = { sig: countrySig, countries, owner, isLand, stats };
+    }
+
+    // cities sit on habitable land and take their allegiance from the country
+    // owner grid, so they depend on everything the countries do (folded into
+    // countrySig) plus their own density/spacing knobs — nothing else.
+    const citySig = `${countrySig}|${msg.density}|${msg.spacing}`;
+    if (citySig !== cityCache.sig) {
+      const { cities, stats } = computeCities(
+        f, flowCache.flow,
+        { owner: countryCache.owner, isLand: countryCache.isLand },
+        { water: msg.water, invert: msg.invert, density: msg.density, spacing: msg.spacing },
+      );
+      cityCache = { sig: citySig, cities, stats };
     }
 
     self.postMessage({
@@ -92,7 +108,8 @@ self.onmessage = async (e) => {
       lakes: coastCache.lakes,
       rivers,
       countries: countryCache.countries,
-      stats: { ...coastCache.stats, ...riverStats, ...countryCache.stats },
+      cities: cityCache.cities,
+      stats: { ...coastCache.stats, ...riverStats, ...countryCache.stats, ...cityCache.stats },
     });
   } catch (err) {
     self.postMessage({ type: "error", id: msg.id, message: String((err && err.message) || err) });

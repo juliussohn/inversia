@@ -190,7 +190,7 @@ share a country; no gaps/overlaps at coasts.
 
 ---
 
-## Phase 7 — Cities (ranked tiers + capitals)
+## Phase 7 — Cities (ranked tiers + capitals) ✅ SHIPPED
 
 **Why now:** Depends on countries + hydrology + coast. Adds the populated layer and
 the first label collision story.
@@ -202,6 +202,30 @@ the first label collision story.
   Each country's top interior city = capital. Frontier towns allowed in wilderness.
 - MapLibre symbol layers with `rank`-driven size + collision priority (big cities
   win label space). Assign each city its owning country (or none).
+
+**Shipped notes:**
+- `computeCities` scores every land cell — flatness + moderate-elevation × additive
+  coast/river/**confluence** draws (river/confluence masks come from the Phase 5
+  flow field) — then places best-first: land cells are **counting-sorted** into
+  score bands (O(N), no comparator over ~2M cells) and walked high→low, each new
+  city held a **Poisson-disk** minimum distance from the rest via a spatial hash.
+  The `spacing` knob is the hard distance floor; `density` is the soft target count;
+  whichever binds first stops placement, keeping the two knobs independent.
+- Placement order **is** the population rank. Rank fraction → metropolis/city/town;
+  then each country's top-ranked owned city is promoted to **capital**. A city's
+  owning country is read straight off the growth `owner` grid (so allegiance always
+  matches the territory it sits in); cities on wilderness are frontier **towns** with
+  `country: -1`, never capitals. To feed this, `computeCountries` now also returns
+  its `owner` + `isLand` arrays (cached in the worker so a density/spacing nudge
+  reuses the growth and only re-places cities).
+- Rendered as a single `cities-symbol` MapLibre **symbol** layer with two generated
+  marker icons (plain dot / ringed-dot capital). `icon-allow-overlap:false` enables
+  collision and `symbol-sort-key:rank` makes bigger cities win label space — a dense
+  region shows only its top cities zoomed out and reveals the rest as you zoom in.
+  Tier + zoom drive `icon-size`. Names are Phase 9, so the marker tier/rank stands
+  in for now (no text → no glyph server needed yet). The three Phase 11 presets gain
+  a `cities-symbol` entry: full in Relief/Political, **major-only** in Minimal
+  (capitals + metropolises via a data-driven `icon-opacity`).
 
 **Out of scope:** name strings (Phase 9 — render placeholder/rank for now).
 

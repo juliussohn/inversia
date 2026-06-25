@@ -53,6 +53,8 @@ export const STYLE_PRESETS = {
       "lakes-fill": { visibility: "visible", paint: { "fill-color": "#3aa0c9", "fill-opacity": 0.45 } },
       "lakes-line": { visibility: "visible", paint: { "line-color": "#bfe6f2", "line-opacity": 0.5, "line-width": 0.6 } },
       "rivers-line": { visibility: "visible", paint: { "line-color": "#2b7fb8", "line-opacity": 0.9 } },
+      // every city, sized by tier; collision thins them per zoom (see world.js)
+      "cities-symbol": { visibility: "visible", paint: { "icon-opacity": 1 } },
     },
   },
 
@@ -77,6 +79,8 @@ export const STYLE_PRESETS = {
       "lakes-fill": { visibility: "visible", paint: { "fill-color": "#aacbe0", "fill-opacity": 1 } },
       "lakes-line": { visibility: "visible", paint: { "line-color": "#8aa9bd", "line-opacity": 0.6, "line-width": 0.6 } },
       "rivers-line": { visibility: "visible", paint: { "line-color": "#6f9ec2", "line-opacity": 0.85 } },
+      // prominent in the atlas look: all tiers, full strength
+      "cities-symbol": { visibility: "visible", paint: { "icon-opacity": 1 } },
     },
   },
 
@@ -99,6 +103,11 @@ export const STYLE_PRESETS = {
       "lakes-fill": { visibility: "visible", paint: { "fill-color": "#eef2f4", "fill-opacity": 1 } },
       "lakes-line": { visibility: "none" },
       "rivers-line": { visibility: "none" },
+      // quiet: only the major settlements (capitals + metropolises) show through
+      "cities-symbol": {
+        visibility: "visible",
+        paint: { "icon-opacity": ["match", ["get", "tier"], "capital", 1, "metropolis", 0.9, 0] },
+      },
     },
   },
 };
