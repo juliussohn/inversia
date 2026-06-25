@@ -8,8 +8,11 @@
  *  through a shared link. Zooming out shows the inverted globe; zooming in is
  *  the same world flattening into a deep-zoom map — one renderer, no seam.
  *
- *  Generated features (coastlines, rivers, countries, cities…) land in later
- *  phases as MapLibre GeoJSON layers on top of this terrain.
+ *  Phase 4 adds the first GENERATED features: coastlines and lakes, computed in
+ *  a Web Worker (src/world/worker.js) from one global elevation field and added
+ *  as MapLibre GeoJSON layers on top of the terrain. Dragging the water slider
+ *  stays shader-only and instant; the vectors regenerate once the drag settles.
+ *  Rivers, countries and cities land in later phases over the same field.
  * ------------------------------------------------------------------ */
 
 import maplibregl from "maplibre-gl";
@@ -76,6 +79,88 @@ function applyRecipeToMap() {
   // terrain reads the recipe live; just ask MapLibre to repaint with the new uniforms
   if (map.getLayer(terrain.id)) map.triggerRepaint();
   scheduleStats();
+  scheduleFeatures();
+}
+
+// ---- generated features: coastlines + lakes (Phase 4) -------------------
+// Computed off-thread from one global elevation field. The worker decodes the
+// field once and re-runs the coast/lake pass whenever the water line, inversion
+// or lake-size floor settles — the drag itself never touches it (shader-only).
+const worker = new Worker(new URL("./world/worker.js", import.meta.url), { type: "module" });
+const emptyFC = () => ({ type: "FeatureCollection", features: [] });
+
+let featTimer = 0;
+let featReqId = 0;       // newest request issued
+let featAckId = 0;       // newest response applied (drop anything older / stale)
+let lastSig = "";        // params last sent — skip regen when nothing relevant changed
+
+// Only the water line, inversion and lake-size floor change the geometry. Relief,
+// seed, future-phase knobs etc. leave coast/lakes untouched, so we fingerprint
+// just those three and skip the worker round-trip when they haven't moved.
+function featureSig() {
+  return `${recipe.world.water}|${recipe.world.invert ? 1 : 0}|${recipe.lakes.minSize}`;
+}
+
+function requestFeatures() {
+  const sig = featureSig();
+  if (sig === lastSig) return;
+  lastSig = sig;
+  worker.postMessage({
+    type: "generate",
+    id: ++featReqId,
+    water: recipe.world.water,
+    invert: recipe.world.invert,
+    minSize: recipe.lakes.minSize,
+  });
+}
+
+// Debounced so a slider drag fires one regeneration on settle, not per frame.
+function scheduleFeatures() {
+  clearTimeout(featTimer);
+  featTimer = setTimeout(requestFeatures, 250);
+}
+
+worker.onmessage = (e) => {
+  const msg = e.data;
+  if (msg.type === "error") { console.warn("[features] worker error:", msg.message); return; }
+  if (msg.type !== "features") return;
+  if (msg.id < featAckId) return;          // a newer response already landed
+  featAckId = msg.id;
+  map.getSource("coast")?.setData(msg.coast);
+  map.getSource("lakes")?.setData(msg.lakes);
+};
+
+// Coast stroke + lake fill, styled to read as one world. The terrain shader
+// already paints below-water areas as sea, so the lake fill is a distinct,
+// slightly brighter tint laid over it — that contrast is what separates an
+// enclosed lake from the world ocean. Coast width grows with zoom so the line
+// stays hairline on the globe and reads at regional zoom.
+function addFeatureLayers() {
+  map.addSource("lakes", { type: "geojson", data: emptyFC() });
+  map.addSource("coast", { type: "geojson", data: emptyFC() });
+
+  map.addLayer({
+    id: "lakes-fill",
+    type: "fill",
+    source: "lakes",
+    paint: { "fill-color": "#3aa0c9", "fill-opacity": 0.45 },
+  });
+  map.addLayer({
+    id: "lakes-line",
+    type: "line",
+    source: "lakes",
+    paint: { "line-color": "#bfe6f2", "line-width": 0.6, "line-opacity": 0.5 },
+  });
+  map.addLayer({
+    id: "coast-line",
+    type: "line",
+    source: "coast",
+    paint: {
+      "line-color": "#0b1a26",
+      "line-opacity": 0.85,
+      "line-width": ["interpolate", ["linear"], ["zoom"], 0, 0.4, 4, 0.9, 8, 1.6],
+    },
+  });
 }
 
 // ---- recipe → URL hash ---------------------------------------------------
@@ -114,7 +199,9 @@ function scheduleStats() {
 // ---- go ------------------------------------------------------------------
 map.on("load", () => {
   applyRecipeToMap();
-  map.addLayer(terrain); // above the placeholder background
+  map.addLayer(terrain);  // above the placeholder background
+  addFeatureLayers();     // coast + lakes sit on top of the terrain
+  requestFeatures();      // first generation (bypasses the settle debounce)
 });
 loadWorldStat().then(refreshStats);
 syncHash();

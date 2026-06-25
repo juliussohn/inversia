@@ -11,6 +11,16 @@ import { defineConfig } from "vite";
 export default defineConfig(({ command }) => ({
   base: command === "build" ? "/inversia/" : "/",
   server: { host: true, port: process.env.PORT ? +process.env.PORT : 5173 },
+  // The generation worker (src/world/worker.js) is bundled in Vite's separate
+  // worker pass, which hashes filenames by default. Pin it to a stable name for
+  // the same reason as the main bundle below: a cached index.js must keep
+  // pointing at a worker file that still exists after the next deploy.
+  worker: {
+    format: "es",
+    rollupOptions: {
+      output: { entryFileNames: "assets/[name].js", chunkFileNames: "assets/[name].js" },
+    },
+  },
   build: {
     rollupOptions: {
       output: {

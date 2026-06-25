@@ -1,7 +1,7 @@
 {
-  "minElev": -8182.0,
-  "maxElev": 5652.0,
-  "width": 2048,
-  "height": 1024,
-  "source": "GMT earth_relief_01d (NOAA/GEBCO, public domain)"
+  "minElev": -10210.0,
+  "maxElev": 6276.0,
+  "width": 3600,
+  "height": 1800,
+  "source": "GMT earth_relief_06m (NOAA/GEBCO, public domain)"
 }
