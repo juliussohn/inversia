@@ -256,32 +256,52 @@ export function extractRivers(flow, { threshold }) {
   const features = [];
   for (const s of rivers) {
     if (indeg[s] !== 0 && indeg[s] < 2) continue; // mid-channel cell, not a start
-    const pts = [center(s)];
-    let repCell = s;            // last cell that truly belongs to this segment
+    const path = [s];           // the cell-index path of this segment
     let c = s;
     for (;;) {
       const r = recv[c];
       if (r < 0 || !isRiver[r]) {
-        // reached the sea / a lake: extend the line into the mouth cell so the
-        // channel visibly touches the shore, then stop.
-        if (r >= 0) pts.push(center(r));
+        // reached the sea / a lake: extend into the mouth cell so the channel
+        // visibly touches the shore, then stop.
+        if (r >= 0) path.push(r);
         break;
       }
-      pts.push(center(r));
+      path.push(r);
       if (indeg[r] >= 2) break;  // hit a confluence: it ends here (a new segment starts there)
-      repCell = r;
       c = r;
     }
-    if (pts.length < 2) continue;
-    features.push({
-      type: "Feature",
-      properties: { flow: Math.round(acc[repCell]), strahler: order[repCell] },
-      geometry: { type: "LineString", coordinates: pts },
-    });
+    if (path.length < 2) continue;
+
+    // Properties come from the last cell that truly belongs to this tributary —
+    // the cell just upstream of the terminating confluence/mouth — so a segment's
+    // width reflects its own flow, not the larger channel it merges into.
+    const repCell = path[path.length - 2];
+    const props = { flow: Math.round(acc[repCell]), strahler: order[repCell] };
+
+    // Flow routing wraps in longitude, so a segment whose receiver sits across
+    // the ±180° seam would otherwise draw a line straight across the globe. Split
+    // the polyline wherever consecutive points jump >180° in lon (same hairline-
+    // gap-at-the-antimeridian compromise the coast layer makes), emitting each
+    // run as its own Feature.
+    let run = [center(path[0])];
+    for (let k = 1; k < path.length; k++) {
+      const p = center(path[k]);
+      if (Math.abs(p[0] - run[run.length - 1][0]) > 180) {
+        if (run.length >= 2) features.push(lineFeature(run, props));
+        run = [p];
+      } else {
+        run.push(p);
+      }
+    }
+    if (run.length >= 2) features.push(lineFeature(run, props));
   }
 
   return {
     rivers: { type: "FeatureCollection", features },
     stats: { rivers: features.length },
   };
+}
+
+function lineFeature(coords, properties) {
+  return { type: "Feature", properties, geometry: { type: "LineString", coordinates: coords } };
 }
