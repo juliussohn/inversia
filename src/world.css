@@ -89,3 +89,28 @@ body {
   color: #0d1b2a;
   background: #cfe0f5;
 }
+
+/* Transient status toast — bake progress + save/load confirmations (Phase 8). */
+#toast {
+  position: fixed;
+  bottom: 56px;
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 20;
+  max-width: 80vw;
+  padding: 8px 16px;
+  border-radius: 8px;
+  font-size: 13px;
+  letter-spacing: 0.02em;
+  color: #eaf1fb;
+  background: rgba(20, 28, 42, 0.92);
+  box-shadow: 0 2px 12px rgba(0, 0, 0, 0.4);
+  backdrop-filter: blur(6px);
+  opacity: 0;
+  transition: opacity 0.2s ease;
+  pointer-events: none;
+}
+
+#toast.show {
+  opacity: 1;
+}
