@@ -18,7 +18,7 @@
  *                      seed, count, areaSkew, ambition, ridge, river, seaCross,
  *                      density, spacing }
  *    worker → main : { type:"features", id, coast, land, lakes, rivers,
- *                      countries, cities, stats }
+ *                      countries, cities, countryLabels, stats }
  *                    { type:"error",    id, message }
  *  The `id` lets the main thread ignore stale responses when a newer request has
  *  already been issued (e.g. fast successive slider settles).
@@ -29,6 +29,7 @@ import { generate } from "./gen/coast.js";
 import { computeFlow, extractRivers } from "./gen/hydro.js";
 import { computeCountries } from "./gen/countries.js";
 import { computeCities } from "./gen/cities.js";
+import { nameWorld } from "./names.js";
 
 let fieldPromise = null;
 const field = () => (fieldPromise ??= loadField());
@@ -100,6 +101,21 @@ self.onmessage = async (e) => {
       cityCache = { sig: citySig, cities, stats };
     }
 
+    // Phase 9: name everything deterministically from the seed + geography. This
+    // MUTATES the city/river/lake features (adds `name` + `family`) and returns a
+    // fresh country-label point layer. Rivers are re-extracted every call, so we
+    // re-name unconditionally rather than caching — it's a cheap O(N) pass next to
+    // the generation work above, and keeps the freshly-extracted rivers named.
+    const { countryLabels } = nameWorld({
+      seed: msg.seed,
+      owner: countryCache.owner,
+      isLand: countryCache.isLand,
+      W: f.W, H: f.H,
+      cities: cityCache.cities,
+      rivers,
+      lakes: coastCache.lakes,
+    });
+
     self.postMessage({
       type: "features",
       id: msg.id,
@@ -109,6 +125,7 @@ self.onmessage = async (e) => {
       rivers,
       countries: countryCache.countries,
       cities: cityCache.cities,
+      countryLabels,
       stats: { ...coastCache.stats, ...riverStats, ...countryCache.stats, ...cityCache.stats },
     });
   } catch (err) {

@@ -52,10 +52,16 @@ const layerVisibility = readLayerVisibility();
 // through where the terrain can't — behind the globe and in the tiny polar gap
 // beyond Web-Mercator's ~±85° limit — so its colour is derived from the recipe
 // to stay in keeping with the world.
+// Vite serves /public at BASE_URL ("/" in dev, "/inversia/" on Pages). Glyphs are
+// self-hosted (public/fonts/) so labels render with no external glyph server and a
+// baked world stays self-contained; MapLibre substitutes {fontstack}/{range}.
+const BASE = import.meta.env?.BASE_URL ?? "/";
+
 function baseStyle() {
   return {
     version: 8,
     projection: { type: "globe" },
+    glyphs: `${BASE}fonts/{fontstack}/{range}.pbf`,
     sources: {},
     layers: [
       { id: "bg", type: "background", paint: { "background-color": backgroundFor(recipe) } },
@@ -181,21 +187,33 @@ worker.onmessage = (e) => {
   if (msg.type !== "features") return;
   if (msg.id < featAckId) return;          // a newer response already landed
   featAckId = msg.id;
-  map.getSource("coast")?.setData(msg.coast);
-  map.getSource("land")?.setData(msg.land);
-  map.getSource("lakes")?.setData(msg.lakes);
-  map.getSource("rivers")?.setData(msg.rivers);
-  if (msg.countries) map.getSource("countries")?.setData(msg.countries);
-  if (msg.cities) map.getSource("cities")?.setData(msg.cities);
+
+  const payload = {
+    coast: msg.coast, land: msg.land, lakes: msg.lakes, rivers: msg.rivers,
+    countries: msg.countries, cities: msg.cities, countryLabels: msg.countryLabels,
+  };
+  applyFeatures(payload);
 
   // Keep the live GeoJSON around so a bundle can freeze exactly what's on screen,
   // and release anyone awaiting the first generation (e.g. an early bake click).
-  lastFeatures = {
-    coast: msg.coast, land: msg.land, lakes: msg.lakes,
-    rivers: msg.rivers, countries: msg.countries, cities: msg.cities,
-  };
+  lastFeatures = payload;
   while (featureWaiters.length) featureWaiters.shift()(lastFeatures);
 };
+
+// Push a full feature payload to the map: setData every source. The label layers
+// read names straight off the feature properties via `text-field: ["get","name"]`
+// (the worker wrote them), so there's nothing to register here. Shared by the live
+// worker path and the baked-bundle load so labels behave identically.
+function applyFeatures(p) {
+  const empty = emptyFC();
+  map.getSource("coast")?.setData(p.coast || empty);
+  map.getSource("land")?.setData(p.land || empty);
+  map.getSource("countries")?.setData(p.countries || empty);
+  map.getSource("lakes")?.setData(p.lakes || empty);
+  map.getSource("rivers")?.setData(p.rivers || empty);
+  map.getSource("cities")?.setData(p.cities || empty);
+  map.getSource("country-labels")?.setData(p.countryLabels || empty);
+}
 
 // Resolve with the current feature payload, awaiting the first generation if it
 // hasn't landed yet. Used by the bundle export so it never ships empty layers.
@@ -217,6 +235,9 @@ function addFeatureLayers() {
   map.addSource("coast", { type: "geojson", data: emptyFC() });
   map.addSource("rivers", { type: "geojson", data: emptyFC() });
   map.addSource("cities", { type: "geojson", data: emptyFC() });
+  // Phase 9: one label point per country (the borders source has no per-country
+  // features to hang a name on — see the Phase 6/9 notes in docs/world-plan.md).
+  map.addSource("country-labels", { type: "geojson", data: emptyFC() });
 
   // Always-mounted land fill — hidden in Relief (the terrain shader paints the
   // land), shown in the flat presets where it IS the land. Sits just above the
@@ -321,6 +342,112 @@ function addFeatureLayers() {
     paint: { "icon-opacity": 1 },
   });
 
+  // ---- labels (Phase 9) --------------------------------------------------
+  // Real MapLibre `text-field` labels, rendered from self-hosted Open Sans glyphs
+  // (public/fonts/, declared as `glyphs` in baseStyle). The worker writes `name`
+  // onto each feature, so the layers just read ["get","name"]. Collision is on
+  // (`text-allow-overlap:false`) so names never stack; `symbol-sort-key` decides
+  // who wins the space (bigger country / higher-ranked city first). Topmost, so
+  // names read over every other feature. A dark fill + light halo stays legible on
+  // both the relief terrain and the pale flat presets.
+
+  // Country names — small-caps, letter-spaced, at the territorial centroid; the
+  // biggest territory wins placement (most-negative sort key = highest priority).
+  map.addLayer({
+    id: "country-label",
+    type: "symbol",
+    source: "country-labels",
+    layout: {
+      "text-field": ["get", "name"],
+      "text-font": ["Open Sans Semibold"],
+      "text-transform": "uppercase",
+      "text-letter-spacing": 0.16,
+      "text-size": ["interpolate", ["linear"], ["zoom"], 0, 11, 4, 13, 8, 16],
+      "text-max-width": 7,
+      "text-allow-overlap": false,
+      "text-padding": 4,
+      "symbol-sort-key": ["*", -1, ["get", "size"]],
+    },
+    paint: {
+      "text-color": "#3a2f22",
+      "text-halo-color": "rgba(248,245,238,0.92)",
+      "text-halo-width": 1.6,
+      "text-opacity": 0.92,
+    },
+  });
+
+  // City names — beside the dot (left-anchored + a small right offset), sized by
+  // tier, and sharing the dot's rank so the largest cities label first.
+  map.addLayer({
+    id: "cities-label",
+    type: "symbol",
+    source: "cities",
+    layout: {
+      "text-field": ["get", "name"],
+      "text-font": ["Open Sans Regular"],
+      "text-size": [
+        "interpolate", ["linear"], ["zoom"],
+        0, ["match", ["get", "tier"], "capital", 12, "metropolis", 11, "city", 10, 9],
+        6, ["match", ["get", "tier"], "capital", 15, "metropolis", 13, "city", 12, 11],
+      ],
+      "text-anchor": "left",
+      "text-offset": [0.7, 0],
+      "text-allow-overlap": false,
+      "text-padding": 2,
+      "symbol-sort-key": ["get", "rank"],
+    },
+    paint: {
+      "text-color": "#241d15",
+      "text-halo-color": "rgba(248,245,238,0.94)",
+      "text-halo-width": 1.4,
+    },
+  });
+
+  // River names — curved ALONG the channel (`symbol-placement:"line"`), italic
+  // blue. A generous symbol-spacing gives short rivers one label and long trunks a
+  // few; text-max-angle keeps it off sharp meanders.
+  map.addLayer({
+    id: "rivers-label",
+    type: "symbol",
+    source: "rivers",
+    layout: {
+      "symbol-placement": "line",
+      "text-field": ["get", "name"],
+      "text-font": ["Open Sans Italic"],
+      "text-size": 11,
+      "text-letter-spacing": 0.08,
+      "symbol-spacing": 500,
+      "text-max-angle": 35,
+      "text-padding": 3,
+    },
+    paint: {
+      "text-color": "#1d5b83",
+      "text-halo-color": "rgba(240,247,250,0.9)",
+      "text-halo-width": 1.4,
+      "text-opacity": 0.9,
+    },
+  });
+
+  // Lake names — italic blue at the polygon centroid (default point placement).
+  map.addLayer({
+    id: "lakes-label",
+    type: "symbol",
+    source: "lakes",
+    layout: {
+      "text-field": ["get", "name"],
+      "text-font": ["Open Sans Italic"],
+      "text-size": ["interpolate", ["linear"], ["zoom"], 0, 10, 6, 13],
+      "text-allow-overlap": false,
+      "text-padding": 2,
+    },
+    paint: {
+      "text-color": "#1d5b83",
+      "text-halo-color": "rgba(240,247,250,0.9)",
+      "text-halo-width": 1.4,
+      "text-opacity": 0.9,
+    },
+  });
+
   // Style switches are an INSTANT snap (no cross-fade): zero out the paint
   // transitions on every property a preset touches so swapping Relief↔Political↔
   // Minimal re-presents the world immediately rather than dissolving through it.
@@ -333,6 +460,10 @@ function addFeatureLayers() {
     ["coast-line", "line-color-transition"], ["coast-line", "line-opacity-transition"],
     ["rivers-line", "line-color-transition"], ["rivers-line", "line-opacity-transition"],
     ["cities-symbol", "icon-opacity-transition"],
+    ["country-label", "text-opacity-transition"],
+    ["cities-label", "text-opacity-transition"],
+    ["rivers-label", "text-opacity-transition"],
+    ["lakes-label", "text-opacity-transition"],
     ["bg", "background-color-transition"],
   ]) {
     try { map.setPaintProperty(layer, prop, snap); } catch { /* ignore */ }
@@ -528,10 +659,11 @@ function enterBakedMode(bundle) {
     "land-fill",                                // keep it beneath the vector layers
   );
 
-  // static features straight from the bundle — no worker round-trip.
-  for (const id of ["coast", "land", "countries", "lakes", "rivers", "cities"]) {
-    map.getSource(id)?.setData(bundle.layers[id] || emptyFC());
-  }
+  // static features straight from the bundle — no worker round-trip. Route through
+  // applyFeatures so the label images are re-registered from the bundled `name`
+  // properties (a fresh page has an empty registry). Older bundles without a
+  // countryLabels layer simply show no country names.
+  applyFeatures(bundle.layers);
 
   // honour the saved view preference (style + toggles), then re-present.
   if (bundle.view?.layerVisibility) Object.assign(layerVisibility, bundle.view.layerVisibility);
