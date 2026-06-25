@@ -30,6 +30,8 @@
  *  x, so the Pacific reads as one ocean.
  * ------------------------------------------------------------------ */
 
+import polygonClipping from "polygon-clipping";
+
 const R_KM = 6371; // mean Earth radius, for the lake size filter
 
 // ---- marching squares -----------------------------------------------------
@@ -252,6 +254,51 @@ function minLakeKm2(minSize) {
   return 200 * Math.pow(5000, s); // 0 → 200, 0.2 → ~1100, 0.5 → ~14 000, 1 → 1e6
 }
 
+// ---- land fill assembly ---------------------------------------------------
+// cos-lat-weighted land fraction (land = eff > level). Decides which of land /
+// water is the unbounded BACKGROUND, which the even-odd assembly below needs.
+function landFractionOf(eff, W, H, level) {
+  let land = 0, total = 0;
+  for (let y = 0; y < H; y++) {
+    const w = Math.cos((90 - ((y + 0.5) / H) * 180) * Math.PI / 180);
+    const row = y * W;
+    for (let x = 0; x < W; x++) {
+      total += w;
+      if (eff[row + x] > level) land += w;
+    }
+  }
+  return total ? land / total : 0;
+}
+
+// Build the LAND polygon (MultiPolygon, with holes) from the closed coast rings.
+//
+// A coastline ring is just a land/water boundary — it carries no "which side is
+// land". The land region is exactly the set of points enclosed by an ODD number
+// of rings *relative to the background*: that is the even-odd fill rule. We get
+// it as a symmetric difference (XOR) of all rings via polygon-clipping. When the
+// background itself is LAND (e.g. the inverted world, where the former oceans are
+// the dominant land and the continents are water HOLES), we add a world-spanning
+// rectangle as one more ring so the parity flips — continents then fall on the
+// even side and are correctly punched OUT as ocean, while everything around them
+// fills as land. Islands-in-lakes-in-continents nest correctly at every depth.
+const WORLD_RECT = [[-180, -90], [180, -90], [180, 90], [-180, 90], [-180, -90]];
+
+function buildLand(coastRings, eff, W, H, level) {
+  if (!coastRings.length) return emptyFC();
+  const polys = coastRings.map((r) => [r.closed ? r : [...r, r[0]]]);
+  if (landFractionOf(eff, W, H, level) > 0.5) polys.push([WORLD_RECT]);
+
+  let geom = [];
+  try {
+    geom = polygonClipping.xor(...polys); // even-odd → MultiPolygon coordinates
+  } catch {
+    geom = []; // a degenerate ring can trip the clipper; better empty than wrong
+  }
+  return geom.length
+    ? { type: "FeatureCollection", features: [{ type: "Feature", properties: {}, geometry: { type: "MultiPolygon", coordinates: geom } }] }
+    : emptyFC();
+}
+
 // ---- public API -----------------------------------------------------------
 const emptyFC = () => ({ type: "FeatureCollection", features: [] });
 
@@ -286,6 +333,14 @@ export function generate(field, { water, invert, minSize }) {
       : [],
   };
 
+  // --- land fill: the coast contour assembled into filled polygons-with-holes ---
+  // The flat map styles (Phase 11) hide the live terrain and paint the ocean as a
+  // flat background, so they need an actual LAND polygon. A ring alone doesn't say
+  // which side is land, so buildLand resolves that with an even-odd assembly that
+  // correctly cuts continents OUT as ocean in the inverted world (where land is
+  // the background) and fills them IN on a normal world. See buildLand.
+  const land = buildLand(coastRings, eff, W, H, level);
+
   // --- lakes: enclosed water basins (everything but the world ocean) ---
   const { comp, oceanId } = labelWater(eff, W, H, level);
   const lakeMask = new Float32Array(W * H);
@@ -308,5 +363,5 @@ export function generate(field, { water, invert, minSize }) {
     });
   }
 
-  return { coast, lakes, stats: { lakes: lakes.features.length } };
+  return { coast, land, lakes, stats: { lakes: lakes.features.length } };
 }

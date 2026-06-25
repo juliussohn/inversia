@@ -267,7 +267,16 @@ fresh world; edits survive in a downloaded bundle.
 
 ---
 
-## Phase 11 — Map style switcher (Relief / Political-Flat / Minimal)
+## Phase 11 — Map style switcher (Relief / Political-Flat / Minimal) ✅ SHIPPED
+
+> **Shipped early (after Phase 5).** Built against the layers that exist today —
+> live terrain (Phase 3), land fill + coast + lakes (Phase 4), rivers (Phase 5).
+> Country fills (Phase 6) and labels (Phase 9) aren't built yet, so the flat
+> presets express their look with the land fill + coastline-as-borders; those
+> later phases slot into the same preset objects in `src/world/styles.js` when
+> they land. Land fill is derived in `src/world/gen/coast.js` by closing the coast
+> contour into filled polygons. Active style is a view preference (URL `style=` +
+> `localStorage`), applied by diffing one persistent style — no `setStyle`.
 
 **Why now:** Last because a true preset switcher needs every layer to exist — land
 fill (Phase 4), country fills (Phase 6), labels (Phase 9). Placed after the others

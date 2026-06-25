@@ -50,3 +50,42 @@ body {
   font-variant-numeric: tabular-nums;
   opacity: 0.85;
 }
+
+/* Map-style switcher — segmented control, top-right above the map. */
+#style-switch {
+  position: fixed;
+  top: 12px;
+  right: 12px;
+  z-index: 10;
+  display: flex;
+  gap: 2px;
+  padding: 3px;
+  border-radius: 8px;
+  background: rgba(20, 28, 42, 0.78);
+  box-shadow: 0 2px 10px rgba(0, 0, 0, 0.35);
+  backdrop-filter: blur(6px);
+}
+
+#style-switch button {
+  appearance: none;
+  border: 0;
+  cursor: pointer;
+  padding: 6px 12px;
+  border-radius: 6px;
+  font: inherit;
+  font-size: 12px;
+  letter-spacing: 0.03em;
+  color: #b8c6dc;
+  background: transparent;
+  transition: background-color 0.12s ease, color 0.12s ease;
+}
+
+#style-switch button:hover {
+  color: #eaf1fb;
+  background: rgba(255, 255, 255, 0.06);
+}
+
+#style-switch button.active {
+  color: #0d1b2a;
+  background: #cfe0f5;
+}

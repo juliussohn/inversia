@@ -29,7 +29,7 @@ let fieldPromise = null;
 const field = () => (fieldPromise ??= loadField());
 
 // Heavy-result caches, keyed by the params they actually depend on.
-let coastCache = { sig: "", coast: null, lakes: null, stats: null };
+let coastCache = { sig: "", coast: null, land: null, lakes: null, stats: null };
 let flowCache = { sig: "", flow: null };
 
 self.onmessage = async (e) => {
@@ -41,12 +41,12 @@ self.onmessage = async (e) => {
     // coast + lakes depend on water / invert / lake-size floor
     const coastSig = `${msg.water}|${msg.invert ? 1 : 0}|${msg.minSize}`;
     if (coastSig !== coastCache.sig) {
-      const { coast, lakes, stats } = generate(f, {
+      const { coast, land, lakes, stats } = generate(f, {
         water: msg.water,
         invert: msg.invert,
         minSize: msg.minSize,
       });
-      coastCache = { sig: coastSig, coast, lakes, stats };
+      coastCache = { sig: coastSig, coast, land, lakes, stats };
     }
 
     // the hydrology flow field depends only on water / invert; the threshold is a
@@ -63,6 +63,7 @@ self.onmessage = async (e) => {
       type: "features",
       id: msg.id,
       coast: coastCache.coast,
+      land: coastCache.land,
       lakes: coastCache.lakes,
       rivers,
       stats: { ...coastCache.stats, ...riverStats },

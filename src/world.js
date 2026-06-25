@@ -22,11 +22,20 @@ import "./world.css";
 import { decodeHash, encodeHash } from "./world/recipe.js";
 import { createPanel } from "./world/panel.js";
 import { createTerrainLayer } from "./world/terrain-layer.js";
+import {
+  STYLE_PRESETS, DEFAULT_STYLE, applyStyle, readStyleId, persistStyle,
+  createStylePicker, normalizeStyle,
+} from "./world/styles.js";
 import { loadWorldStat, landFraction } from "./terrain.js";
 
 // ---- recipe (single source of truth) ------------------------------------
 // Seed it straight from the URL hash so a shared link restores the same world.
 const recipe = decodeHash(location.hash);
+
+// ---- active map style (a VIEW preference, NOT part of the recipe) --------
+// Resolved from the URL first (shared links pin world + style), then the last
+// local choice. It rides alongside the world in the hash and survives reseeds.
+let currentStyle = readStyleId(location.hash);
 
 // ---- base style ----------------------------------------------------------
 // A minimal valid style under globe projection: just a solid background sphere
@@ -56,6 +65,15 @@ function backgroundFor(r) {
   return `rgb(${a}, ${b}, ${c})`;
 }
 
+// The background layer IS the whole sea in the flat presets (terrain hidden), so
+// its colour is style-dependent: a flat ocean tint when the preset declares one,
+// otherwise the recipe-derived backdrop that `relief` shows behind the globe.
+function applyBackground() {
+  if (!map.getLayer("bg")) return;
+  const ocean = STYLE_PRESETS[normalizeStyle(currentStyle)].ocean;
+  map.setPaintProperty("bg", "background-color", ocean ?? backgroundFor(recipe));
+}
+
 const map = new maplibregl.Map({
   container: "map",
   style: baseStyle(),
@@ -75,7 +93,7 @@ map.addControl(new maplibregl.AttributionControl({ compact: true }), "bottom-lef
 const terrain = createTerrainLayer(recipe);
 
 function applyRecipeToMap() {
-  if (map.getLayer("bg")) map.setPaintProperty("bg", "background-color", backgroundFor(recipe));
+  applyBackground();
   // terrain reads the recipe live; just ask MapLibre to repaint with the new uniforms
   if (map.getLayer(terrain.id)) map.triggerRepaint();
   scheduleStats();
@@ -128,6 +146,7 @@ worker.onmessage = (e) => {
   if (msg.id < featAckId) return;          // a newer response already landed
   featAckId = msg.id;
   map.getSource("coast")?.setData(msg.coast);
+  map.getSource("land")?.setData(msg.land);
   map.getSource("lakes")?.setData(msg.lakes);
   map.getSource("rivers")?.setData(msg.rivers);
 };
@@ -138,9 +157,21 @@ worker.onmessage = (e) => {
 // enclosed lake from the world ocean. Coast width grows with zoom so the line
 // stays hairline on the globe and reads at regional zoom.
 function addFeatureLayers() {
+  map.addSource("land", { type: "geojson", data: emptyFC() });
   map.addSource("lakes", { type: "geojson", data: emptyFC() });
   map.addSource("coast", { type: "geojson", data: emptyFC() });
   map.addSource("rivers", { type: "geojson", data: emptyFC() });
+
+  // Always-mounted land fill — hidden in Relief (the terrain shader paints the
+  // land), shown in the flat presets where it IS the land. Sits just above the
+  // terrain so the flat ocean (background) shows through everywhere it isn't.
+  map.addLayer({
+    id: "land-fill",
+    type: "fill",
+    source: "land",
+    layout: { visibility: "none" },
+    paint: { "fill-color": "#ece6d6", "fill-opacity": 1 },
+  });
 
   map.addLayer({
     id: "lakes-fill",
@@ -186,13 +217,45 @@ function addFeatureLayers() {
       ],
     },
   });
+
+  // Style switches are an INSTANT snap (no cross-fade): zero out the paint
+  // transitions on every property a preset touches so swapping Relief↔Political↔
+  // Minimal re-presents the world immediately rather than dissolving through it.
+  const snap = { duration: 0 };
+  for (const [layer, prop] of [
+    ["land-fill", "fill-color-transition"], ["land-fill", "fill-opacity-transition"],
+    ["lakes-fill", "fill-color-transition"], ["lakes-fill", "fill-opacity-transition"],
+    ["lakes-line", "line-color-transition"], ["lakes-line", "line-opacity-transition"],
+    ["coast-line", "line-color-transition"], ["coast-line", "line-opacity-transition"],
+    ["rivers-line", "line-color-transition"], ["rivers-line", "line-opacity-transition"],
+    ["bg", "background-color-transition"],
+  ]) {
+    try { map.setPaintProperty(layer, prop, snap); } catch { /* ignore */ }
+  }
 }
 
 // ---- recipe → URL hash ---------------------------------------------------
-// Keep a deep-link in the address bar; replaceState avoids history spam.
+// Keep a deep-link in the address bar; replaceState avoids history spam. The
+// active style rides alongside the world params as a separate `style` key (only
+// when it differs from the default), so the link pins both world AND look.
 function syncHash() {
-  const h = encodeHash(recipe);
+  const p = new URLSearchParams(encodeHash(recipe));
+  if (normalizeStyle(currentStyle) !== DEFAULT_STYLE) p.set("style", currentStyle);
+  const h = p.toString();
   history.replaceState(null, "", h ? `#${h}` : location.pathname + location.search);
+}
+
+// ---- map style switching -------------------------------------------------
+// Diff the chosen preset onto the one persistent style — never `setStyle`, so the
+// terrain layer and live sources stay mounted. Switching style never touches the
+// world; it only re-presents it, persists the choice, and refreshes the link.
+function setMapStyle(id) {
+  currentStyle = normalizeStyle(id);
+  applyStyle(map, terrain.id, currentStyle);
+  applyBackground();
+  persistStyle(currentStyle);
+  picker.setActive(currentStyle);
+  syncHash();
 }
 
 // ---- auto-generated control panel ----------------------------------------
@@ -204,6 +267,15 @@ createPanel({
     syncHash();
   },
 });
+
+// ---- map-style picker ----------------------------------------------------
+// A small segmented control (Relief / Political / Minimal). It reflects the
+// resolved-from-URL choice on load and drives setMapStyle on click.
+const picker = createStylePicker({
+  current: currentStyle,
+  onSelect: setMapStyle,
+});
+document.body.appendChild(picker.el);
 
 // ---- land / ocean readout ------------------------------------------------
 // Cheap global statistic from the decoded z0 world tile. Recomputed on settle
@@ -225,7 +297,9 @@ function scheduleStats() {
 map.on("load", () => {
   applyRecipeToMap();
   map.addLayer(terrain);  // above the placeholder background
-  addFeatureLayers();     // coast + lakes sit on top of the terrain
+  addFeatureLayers();     // land + coast + lakes + rivers sit on top of the terrain
+  applyStyle(map, terrain.id, currentStyle); // present in the resolved style from the start
+  applyBackground();
   requestFeatures();      // first generation (bypasses the settle debounce)
 });
 loadWorldStat().then(refreshStats);
