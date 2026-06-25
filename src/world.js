@@ -22,6 +22,7 @@ import "./world.css";
 import { decodeHash, encodeHash, eachField, fromJSON, toJSON } from "./world/recipe.js";
 import { createPanel } from "./world/panel.js";
 import { createTerrainLayer } from "./world/terrain-layer.js";
+import { createLabelRegistry } from "./world/labels.js";
 import {
   STYLE_PRESETS, DEFAULT_STYLE, applyStyle, readStyleId, persistStyle,
   createStylePicker, normalizeStyle,
@@ -100,6 +101,11 @@ map.addControl(new maplibregl.AttributionControl({ compact: true }), "bottom-lef
 // The live inverted terrain renderer. It reads invert/water/relief straight off
 // the recipe each frame, so panel edits show instantly — we only nudge a repaint.
 const terrain = createTerrainLayer(recipe);
+
+// Phase 9: place names render as canvas-drawn icon images (no glyph server), so
+// the label layers stay self-contained and bake cleanly. The registry caches one
+// image per distinct label and drops the unreferenced ones after each regen.
+const labels = createLabelRegistry(map);
 
 function applyRecipeToMap() {
   applyBackground();
@@ -181,21 +187,52 @@ worker.onmessage = (e) => {
   if (msg.type !== "features") return;
   if (msg.id < featAckId) return;          // a newer response already landed
   featAckId = msg.id;
-  map.getSource("coast")?.setData(msg.coast);
-  map.getSource("land")?.setData(msg.land);
-  map.getSource("lakes")?.setData(msg.lakes);
-  map.getSource("rivers")?.setData(msg.rivers);
-  if (msg.countries) map.getSource("countries")?.setData(msg.countries);
-  if (msg.cities) map.getSource("cities")?.setData(msg.cities);
+
+  const payload = {
+    coast: msg.coast, land: msg.land, lakes: msg.lakes, rivers: msg.rivers,
+    countries: msg.countries, cities: msg.cities, countryLabels: msg.countryLabels,
+  };
+  applyFeatures(payload);
 
   // Keep the live GeoJSON around so a bundle can freeze exactly what's on screen,
   // and release anyone awaiting the first generation (e.g. an early bake click).
-  lastFeatures = {
-    coast: msg.coast, land: msg.land, lakes: msg.lakes,
-    rivers: msg.rivers, countries: msg.countries, cities: msg.cities,
-  };
+  lastFeatures = payload;
   while (featureWaiters.length) featureWaiters.shift()(lastFeatures);
 };
+
+// Register a label image per named feature in `fc`, stamp the image id onto each
+// feature's `labelImg` (what the symbol layer reads), and return the ids used so
+// the caller can garbage-collect the rest. Features with no `name` are skipped.
+function labelFC(fc, role, sink) {
+  for (const f of fc?.features ?? []) {
+    const nm = f.properties?.name;
+    if (!nm) continue;
+    const id = labels.ensure(nm, role);
+    (f.properties ??= {}).labelImg = id;
+    sink.add(id);
+  }
+}
+
+// Push a full feature payload to the map: name → image for every label layer,
+// drop the now-unreferenced label images, then setData every source. Shared by
+// the live worker path and the baked-bundle load so labels behave identically.
+function applyFeatures(p) {
+  const need = new Set();
+  labelFC(p.countryLabels, "country", need);
+  labelFC(p.cities, "city", need);
+  labelFC(p.rivers, "river", need);
+  labelFC(p.lakes, "lake", need);
+  labels.gc(need);
+
+  const empty = emptyFC();
+  map.getSource("coast")?.setData(p.coast || empty);
+  map.getSource("land")?.setData(p.land || empty);
+  map.getSource("countries")?.setData(p.countries || empty);
+  map.getSource("lakes")?.setData(p.lakes || empty);
+  map.getSource("rivers")?.setData(p.rivers || empty);
+  map.getSource("cities")?.setData(p.cities || empty);
+  map.getSource("country-labels")?.setData(p.countryLabels || empty);
+}
 
 // Resolve with the current feature payload, awaiting the first generation if it
 // hasn't landed yet. Used by the bundle export so it never ships empty layers.
@@ -217,6 +254,9 @@ function addFeatureLayers() {
   map.addSource("coast", { type: "geojson", data: emptyFC() });
   map.addSource("rivers", { type: "geojson", data: emptyFC() });
   map.addSource("cities", { type: "geojson", data: emptyFC() });
+  // Phase 9: one label point per country (the borders source has no per-country
+  // features to hang a name on — see the Phase 6/9 notes in docs/world-plan.md).
+  map.addSource("country-labels", { type: "geojson", data: emptyFC() });
 
   // Always-mounted land fill — hidden in Relief (the terrain shader paints the
   // land), shown in the flat presets where it IS the land. Sits just above the
@@ -321,6 +361,74 @@ function addFeatureLayers() {
     paint: { "icon-opacity": 1 },
   });
 
+  // ---- labels (Phase 9) --------------------------------------------------
+  // Text is pre-rendered to icon images (src/world/labels.js) — no glyph server —
+  // and referenced per feature via `icon-image: ["get","labelImg"]`. Every label
+  // layer keeps collision on (`icon-allow-overlap:false`) so labels never stack;
+  // `symbol-sort-key` decides who wins the space (bigger country / higher-ranked
+  // city first). These sit topmost so names read over every other feature.
+
+  // Country names — at each country's territorial centroid; the biggest territory
+  // wins placement (most-negative sort key = highest priority).
+  map.addLayer({
+    id: "country-label",
+    type: "symbol",
+    source: "country-labels",
+    layout: {
+      "icon-image": ["get", "labelImg"],
+      "icon-allow-overlap": false,
+      "icon-ignore-placement": false,
+      "icon-padding": 4,
+      "symbol-sort-key": ["*", -1, ["get", "size"]],
+    },
+    paint: { "icon-opacity": 0.92 },
+  });
+
+  // City names — sit just to the right of the dot (anchor left + offset), and
+  // inherit the dot's rank so the largest cities label first under collision.
+  map.addLayer({
+    id: "cities-label",
+    type: "symbol",
+    source: "cities",
+    layout: {
+      "icon-image": ["get", "labelImg"],
+      "icon-anchor": "left",
+      "icon-offset": [11, 0],
+      "icon-allow-overlap": false,
+      "icon-padding": 2,
+      "symbol-sort-key": ["get", "rank"],
+    },
+    paint: { "icon-opacity": 1 },
+  });
+
+  // River names — a single point label near the channel's middle (point placement
+  // on the line geometry). Curved line-following text wants glyphs, deferred.
+  map.addLayer({
+    id: "rivers-label",
+    type: "symbol",
+    source: "rivers",
+    layout: {
+      "icon-image": ["get", "labelImg"],
+      "symbol-placement": "point",
+      "icon-allow-overlap": false,
+      "icon-padding": 2,
+    },
+    paint: { "icon-opacity": 0.9 },
+  });
+
+  // Lake names — at the polygon centroid.
+  map.addLayer({
+    id: "lakes-label",
+    type: "symbol",
+    source: "lakes",
+    layout: {
+      "icon-image": ["get", "labelImg"],
+      "icon-allow-overlap": false,
+      "icon-padding": 2,
+    },
+    paint: { "icon-opacity": 0.9 },
+  });
+
   // Style switches are an INSTANT snap (no cross-fade): zero out the paint
   // transitions on every property a preset touches so swapping Relief↔Political↔
   // Minimal re-presents the world immediately rather than dissolving through it.
@@ -333,6 +441,10 @@ function addFeatureLayers() {
     ["coast-line", "line-color-transition"], ["coast-line", "line-opacity-transition"],
     ["rivers-line", "line-color-transition"], ["rivers-line", "line-opacity-transition"],
     ["cities-symbol", "icon-opacity-transition"],
+    ["country-label", "icon-opacity-transition"],
+    ["cities-label", "icon-opacity-transition"],
+    ["rivers-label", "icon-opacity-transition"],
+    ["lakes-label", "icon-opacity-transition"],
     ["bg", "background-color-transition"],
   ]) {
     try { map.setPaintProperty(layer, prop, snap); } catch { /* ignore */ }
@@ -528,10 +640,11 @@ function enterBakedMode(bundle) {
     "land-fill",                                // keep it beneath the vector layers
   );
 
-  // static features straight from the bundle — no worker round-trip.
-  for (const id of ["coast", "land", "countries", "lakes", "rivers", "cities"]) {
-    map.getSource(id)?.setData(bundle.layers[id] || emptyFC());
-  }
+  // static features straight from the bundle — no worker round-trip. Route through
+  // applyFeatures so the label images are re-registered from the bundled `name`
+  // properties (a fresh page has an empty registry). Older bundles without a
+  // countryLabels layer simply show no country names.
+  applyFeatures(bundle.layers);
 
   // honour the saved view preference (style + toggles), then re-present.
   if (bundle.view?.layerVisibility) Object.assign(layerVisibility, bundle.view.layerVisibility);

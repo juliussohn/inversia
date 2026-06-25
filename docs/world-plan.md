@@ -286,7 +286,7 @@ and identical appearance; autosave survives a refresh; recipe round-trips.
 
 ---
 
-## Phase 9 — Naming (deterministic, per-language-family)
+## Phase 9 — Naming (deterministic, per-language-family) ✅ SHIPPED
 
 **Why now:** Cosmetic but high-delight; data-model slots were reserved from the
 start, so this is mostly additive.
@@ -304,9 +304,48 @@ source** (one point per country at a representative interior point — e.g. its
 capital from Phase 7, or a pole-of-inaccessibility) and write `name` there. Rivers/
 lakes/cities still carry their own per-feature properties for labeling as planned.
 
-**Out of scope:** LLM naming (explicitly not chosen).
+**Shipped notes:**
+- `src/world/names.js` is a pure **syllable grammar** (no Markov corpus needed): six
+  hand-tuned **language families** (Romance / Nordic / Slavic / arid-Semitic /
+  Oceanic / East-Asian-ish), each a tiny phonotactic table (onsets, vowel nuclei,
+  codas, place-suffixes). `makeName(seedNum, family)` is seeded by a 32-bit FNV
+  hash of `(seed, role, identity)`, so a feature's name is a **pure function of the
+  world seed + its identity** → same seed → same atlas, change the seed → renamed.
+- **Per-language-family is spatial**: `assignFamilies` scatters ~√(country-count)
+  family ANCHORS over the actual countries and gives each country its nearest
+  anchor's family (great-circle nearest, antimeridian-safe via unit vectors). So
+  neighbours share a phonetic style while a big continent can straddle a language
+  border. Rivers/lakes take the family of the territory they sit in (river = modal
+  owner along the channel; lake = nearest country to its centroid); cities take
+  their owning country's family, frontier towns the nearest country's.
+- Runs **in the generation worker** right after countries/cities/rivers/lakes
+  exist, so it reads allegiance straight off the `owner` grid. `nameWorld` MUTATES
+  city/river/lake feature props (adds `name` + `family`) and RETURNS a fresh
+  **`country-labels`** point FeatureCollection — one label per country at its
+  **unit-vector territorial centroid** (pole-of-inaccessibility deferred).
+- **No glyph server.** MapLibre symbol text needs font PBFs, which an offline-
+  bakeable world shouldn't depend on, so labels are rendered to **canvas icon
+  images** (`src/world/labels.js`) — one cached image per distinct label, keyed
+  `lbl:<role>:<text>`, referenced by the symbol layers via `icon-image:
+  ["get","labelImg"]`. Dark text + strong light halo reads on both the dark relief
+  and the pale flat presets, so the preset switcher only toggles visibility/opacity
+  (never re-renders). A `gc()` pass drops unreferenced images after each regen so
+  the atlas stays bounded across reseeds. Four new symbol layers (`country-label`,
+  `cities-label`, `rivers-label`, `lakes-label`) keep collision on
+  (`icon-allow-overlap:false`) with `symbol-sort-key` = country size / city rank so
+  bigger places win label space; city names anchor to the right of the dot.
+- A **"Labels"** entry joins the per-layer visibility toggles and all three style
+  presets gain label specs: subtle over **Relief**, prominent in **Political**,
+  **country + major-city names only** in **Minimal** (water labels off). Labels
+  carry into the **bake**: `country-labels` rides in the bundle and a baked load
+  re-registers its images from the bundled `name` props, so a frozen world keeps
+  its atlas with no worker.
 
-**Files:** new `src/world/names.js`; label layer updates.
+**Out of scope:** LLM naming (explicitly not chosen); curved line-following river
+labels (a single point label per river instead — true along-line text wants glyphs).
+
+**Files:** new `src/world/names.js`, `src/world/labels.js`; `src/world/worker.js`,
+`src/world.js`, `src/world/styles.js` wiring.
 
 **Acceptance:** every country/city/river/lake has a stable name; same seed →
 same names; neighboring regions feel linguistically related.
