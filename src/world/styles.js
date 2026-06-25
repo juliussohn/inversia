@@ -14,10 +14,10 @@
  *    minimal   — quiet two-tone: flat land/water, hairline coast, no rivers, no
  *                political boundaries.
  *
- *  (Phase 9 adds place-name labels — country / city / river / lake — rendered as
- *  canvas icon images (src/world/labels.js), so each preset now also tunes label
- *  visibility + opacity: subtle over the relief, prominent in the atlas look,
- *  major-only in minimal.)
+ *  (Phase 9 adds place-name labels — country / city / river / lake — as real
+ *  MapLibre `text-field` symbols (self-hosted Open Sans glyphs), so each preset now
+ *  also tunes label visibility + text-opacity: subtle over the relief, prominent in
+ *  the atlas look, major-only in minimal.)
  *
  *  The active style is a VIEW preference, not part of the world recipe: it lives
  *  in the URL (`?…&style=`) and localStorage, so a shared link pins world + style
@@ -85,10 +85,10 @@ export const STYLE_PRESETS = {
       // every city, sized by tier; collision thins them per zoom (see world.js)
       "cities-symbol": { visibility: "visible", paint: { "icon-opacity": 1 } },
       // names ride over the relief; collision keeps them from crowding the terrain
-      "country-label": { visibility: "visible", paint: { "icon-opacity": 0.9 } },
-      "cities-label": { visibility: "visible", paint: { "icon-opacity": 1 } },
-      "rivers-label": { visibility: "visible", paint: { "icon-opacity": 0.85 } },
-      "lakes-label": { visibility: "visible", paint: { "icon-opacity": 0.85 } },
+      "country-label": { visibility: "visible", paint: { "text-opacity": 0.9 } },
+      "cities-label": { visibility: "visible", paint: { "text-opacity": 1 } },
+      "rivers-label": { visibility: "visible", paint: { "text-opacity": 0.85 } },
+      "lakes-label": { visibility: "visible", paint: { "text-opacity": 0.85 } },
     },
   },
 
@@ -116,10 +116,10 @@ export const STYLE_PRESETS = {
       // prominent in the atlas look: all tiers, full strength
       "cities-symbol": { visibility: "visible", paint: { "icon-opacity": 1 } },
       // prominent labelling — the atlas reads by its names
-      "country-label": { visibility: "visible", paint: { "icon-opacity": 1 } },
-      "cities-label": { visibility: "visible", paint: { "icon-opacity": 1 } },
-      "rivers-label": { visibility: "visible", paint: { "icon-opacity": 0.95 } },
-      "lakes-label": { visibility: "visible", paint: { "icon-opacity": 0.95 } },
+      "country-label": { visibility: "visible", paint: { "text-opacity": 1 } },
+      "cities-label": { visibility: "visible", paint: { "text-opacity": 1 } },
+      "rivers-label": { visibility: "visible", paint: { "text-opacity": 0.95 } },
+      "lakes-label": { visibility: "visible", paint: { "text-opacity": 0.95 } },
     },
   },
 
@@ -148,10 +148,10 @@ export const STYLE_PRESETS = {
         paint: { "icon-opacity": ["match", ["get", "tier"], "capital", 1, "metropolis", 0.9, 0] },
       },
       // quiet: country names + only major-city names; no water-feature labels
-      "country-label": { visibility: "visible", paint: { "icon-opacity": 1 } },
+      "country-label": { visibility: "visible", paint: { "text-opacity": 1 } },
       "cities-label": {
         visibility: "visible",
-        paint: { "icon-opacity": ["match", ["get", "tier"], "capital", 1, "metropolis", 0.9, 0] },
+        paint: { "text-opacity": ["match", ["get", "tier"], "capital", 1, "metropolis", 0.9, 0] },
       },
       "rivers-label": { visibility: "none" },
       "lakes-label": { visibility: "none" },

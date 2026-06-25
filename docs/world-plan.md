@@ -323,17 +323,21 @@ lakes/cities still carry their own per-feature properties for labeling as planne
   city/river/lake feature props (adds `name` + `family`) and RETURNS a fresh
   **`country-labels`** point FeatureCollection — one label per country at its
   **unit-vector territorial centroid** (pole-of-inaccessibility deferred).
-- **No glyph server.** MapLibre symbol text needs font PBFs, which an offline-
-  bakeable world shouldn't depend on, so labels are rendered to **canvas icon
-  images** (`src/world/labels.js`) — one cached image per distinct label, keyed
-  `lbl:<role>:<text>`, referenced by the symbol layers via `icon-image:
-  ["get","labelImg"]`. Dark text + strong light halo reads on both the dark relief
-  and the pale flat presets, so the preset switcher only toggles visibility/opacity
-  (never re-renders). A `gc()` pass drops unreferenced images after each regen so
-  the atlas stays bounded across reseeds. Four new symbol layers (`country-label`,
-  `cities-label`, `rivers-label`, `lakes-label`) keep collision on
-  (`icon-allow-overlap:false`) with `symbol-sort-key` = country size / city rank so
-  bigger places win label space; city names anchor to the right of the dot.
+- **Real `text-field`, self-hosted glyphs.** Labels are proper MapLibre
+  `text-field` symbols reading `["get","name"]`. MapLibre rasterizes text from font
+  **glyph PBFs**, so rather than depend on an external glyph server (which would
+  break the offline / self-contained bake) we **bundle Open Sans** (Apache-2.0,
+  Regular / Semibold / Italic, the ASCII `0-255` range only — names are ASCII) under
+  `public/fonts/` and point the style's `glyphs` at `<base>/fonts/{fontstack}/
+  {range}.pbf`. A baked world loads in the same app, so it keeps its labels with no
+  network. Four symbol layers (`country-label`, `cities-label`, `rivers-label`,
+  `lakes-label`) keep collision on (`text-allow-overlap:false`) with
+  `symbol-sort-key` = country size / city rank so bigger places win label space.
+  Country names are small-caps Semibold at the territorial centroid; **river names
+  curve along the channel** (`symbol-placement:"line"`, italic); lakes/cities are
+  point labels (city names left-anchored beside the dot). A dark fill + light halo
+  reads on both the relief and the flat presets, so the preset switcher only tunes
+  visibility / `text-opacity`.
 - A **"Labels"** entry joins the per-layer visibility toggles and all three style
   presets gain label specs: subtle over **Relief**, prominent in **Political**,
   **country + major-city names only** in **Minimal** (water labels off). Labels
@@ -341,11 +345,11 @@ lakes/cities still carry their own per-feature properties for labeling as planne
   re-registers its images from the bundled `name` props, so a frozen world keeps
   its atlas with no worker.
 
-**Out of scope:** LLM naming (explicitly not chosen); curved line-following river
-labels (a single point label per river instead — true along-line text wants glyphs).
+**Out of scope:** LLM naming (explicitly not chosen); non-ASCII glyph ranges (only
+`0-255` bundled — fetch higher ranges if names ever go non-Latin).
 
-**Files:** new `src/world/names.js`, `src/world/labels.js`; `src/world/worker.js`,
-`src/world.js`, `src/world/styles.js` wiring.
+**Files:** new `src/world/names.js`, bundled glyphs under `public/fonts/`;
+`src/world/worker.js`, `src/world.js`, `src/world/styles.js` wiring.
 
 **Acceptance:** every country/city/river/lake has a stable name; same seed →
 same names; neighboring regions feel linguistically related.

@@ -22,7 +22,6 @@ import "./world.css";
 import { decodeHash, encodeHash, eachField, fromJSON, toJSON } from "./world/recipe.js";
 import { createPanel } from "./world/panel.js";
 import { createTerrainLayer } from "./world/terrain-layer.js";
-import { createLabelRegistry } from "./world/labels.js";
 import {
   STYLE_PRESETS, DEFAULT_STYLE, applyStyle, readStyleId, persistStyle,
   createStylePicker, normalizeStyle,
@@ -53,10 +52,16 @@ const layerVisibility = readLayerVisibility();
 // through where the terrain can't — behind the globe and in the tiny polar gap
 // beyond Web-Mercator's ~±85° limit — so its colour is derived from the recipe
 // to stay in keeping with the world.
+// Vite serves /public at BASE_URL ("/" in dev, "/inversia/" on Pages). Glyphs are
+// self-hosted (public/fonts/) so labels render with no external glyph server and a
+// baked world stays self-contained; MapLibre substitutes {fontstack}/{range}.
+const BASE = import.meta.env?.BASE_URL ?? "/";
+
 function baseStyle() {
   return {
     version: 8,
     projection: { type: "globe" },
+    glyphs: `${BASE}fonts/{fontstack}/{range}.pbf`,
     sources: {},
     layers: [
       { id: "bg", type: "background", paint: { "background-color": backgroundFor(recipe) } },
@@ -101,11 +106,6 @@ map.addControl(new maplibregl.AttributionControl({ compact: true }), "bottom-lef
 // The live inverted terrain renderer. It reads invert/water/relief straight off
 // the recipe each frame, so panel edits show instantly — we only nudge a repaint.
 const terrain = createTerrainLayer(recipe);
-
-// Phase 9: place names render as canvas-drawn icon images (no glyph server), so
-// the label layers stay self-contained and bake cleanly. The registry caches one
-// image per distinct label and drops the unreferenced ones after each regen.
-const labels = createLabelRegistry(map);
 
 function applyRecipeToMap() {
   applyBackground();
@@ -200,30 +200,11 @@ worker.onmessage = (e) => {
   while (featureWaiters.length) featureWaiters.shift()(lastFeatures);
 };
 
-// Register a label image per named feature in `fc`, stamp the image id onto each
-// feature's `labelImg` (what the symbol layer reads), and return the ids used so
-// the caller can garbage-collect the rest. Features with no `name` are skipped.
-function labelFC(fc, role, sink) {
-  for (const f of fc?.features ?? []) {
-    const nm = f.properties?.name;
-    if (!nm) continue;
-    const id = labels.ensure(nm, role);
-    (f.properties ??= {}).labelImg = id;
-    sink.add(id);
-  }
-}
-
-// Push a full feature payload to the map: name → image for every label layer,
-// drop the now-unreferenced label images, then setData every source. Shared by
-// the live worker path and the baked-bundle load so labels behave identically.
+// Push a full feature payload to the map: setData every source. The label layers
+// read names straight off the feature properties via `text-field: ["get","name"]`
+// (the worker wrote them), so there's nothing to register here. Shared by the live
+// worker path and the baked-bundle load so labels behave identically.
 function applyFeatures(p) {
-  const need = new Set();
-  labelFC(p.countryLabels, "country", need);
-  labelFC(p.cities, "city", need);
-  labelFC(p.rivers, "river", need);
-  labelFC(p.lakes, "lake", need);
-  labels.gc(need);
-
   const empty = emptyFC();
   map.getSource("coast")?.setData(p.coast || empty);
   map.getSource("land")?.setData(p.land || empty);
@@ -362,71 +343,109 @@ function addFeatureLayers() {
   });
 
   // ---- labels (Phase 9) --------------------------------------------------
-  // Text is pre-rendered to icon images (src/world/labels.js) — no glyph server —
-  // and referenced per feature via `icon-image: ["get","labelImg"]`. Every label
-  // layer keeps collision on (`icon-allow-overlap:false`) so labels never stack;
-  // `symbol-sort-key` decides who wins the space (bigger country / higher-ranked
-  // city first). These sit topmost so names read over every other feature.
+  // Real MapLibre `text-field` labels, rendered from self-hosted Open Sans glyphs
+  // (public/fonts/, declared as `glyphs` in baseStyle). The worker writes `name`
+  // onto each feature, so the layers just read ["get","name"]. Collision is on
+  // (`text-allow-overlap:false`) so names never stack; `symbol-sort-key` decides
+  // who wins the space (bigger country / higher-ranked city first). Topmost, so
+  // names read over every other feature. A dark fill + light halo stays legible on
+  // both the relief terrain and the pale flat presets.
 
-  // Country names — at each country's territorial centroid; the biggest territory
-  // wins placement (most-negative sort key = highest priority).
+  // Country names — small-caps, letter-spaced, at the territorial centroid; the
+  // biggest territory wins placement (most-negative sort key = highest priority).
   map.addLayer({
     id: "country-label",
     type: "symbol",
     source: "country-labels",
     layout: {
-      "icon-image": ["get", "labelImg"],
-      "icon-allow-overlap": false,
-      "icon-ignore-placement": false,
-      "icon-padding": 4,
+      "text-field": ["get", "name"],
+      "text-font": ["Open Sans Semibold"],
+      "text-transform": "uppercase",
+      "text-letter-spacing": 0.16,
+      "text-size": ["interpolate", ["linear"], ["zoom"], 0, 11, 4, 13, 8, 16],
+      "text-max-width": 7,
+      "text-allow-overlap": false,
+      "text-padding": 4,
       "symbol-sort-key": ["*", -1, ["get", "size"]],
     },
-    paint: { "icon-opacity": 0.92 },
+    paint: {
+      "text-color": "#3a2f22",
+      "text-halo-color": "rgba(248,245,238,0.92)",
+      "text-halo-width": 1.6,
+      "text-opacity": 0.92,
+    },
   });
 
-  // City names — sit just to the right of the dot (anchor left + offset), and
-  // inherit the dot's rank so the largest cities label first under collision.
+  // City names — beside the dot (left-anchored + a small right offset), sized by
+  // tier, and sharing the dot's rank so the largest cities label first.
   map.addLayer({
     id: "cities-label",
     type: "symbol",
     source: "cities",
     layout: {
-      "icon-image": ["get", "labelImg"],
-      "icon-anchor": "left",
-      "icon-offset": [11, 0],
-      "icon-allow-overlap": false,
-      "icon-padding": 2,
+      "text-field": ["get", "name"],
+      "text-font": ["Open Sans Regular"],
+      "text-size": [
+        "interpolate", ["linear"], ["zoom"],
+        0, ["match", ["get", "tier"], "capital", 12, "metropolis", 11, "city", 10, 9],
+        6, ["match", ["get", "tier"], "capital", 15, "metropolis", 13, "city", 12, 11],
+      ],
+      "text-anchor": "left",
+      "text-offset": [0.7, 0],
+      "text-allow-overlap": false,
+      "text-padding": 2,
       "symbol-sort-key": ["get", "rank"],
     },
-    paint: { "icon-opacity": 1 },
+    paint: {
+      "text-color": "#241d15",
+      "text-halo-color": "rgba(248,245,238,0.94)",
+      "text-halo-width": 1.4,
+    },
   });
 
-  // River names — a single point label near the channel's middle (point placement
-  // on the line geometry). Curved line-following text wants glyphs, deferred.
+  // River names — curved ALONG the channel (`symbol-placement:"line"`), italic
+  // blue. A generous symbol-spacing gives short rivers one label and long trunks a
+  // few; text-max-angle keeps it off sharp meanders.
   map.addLayer({
     id: "rivers-label",
     type: "symbol",
     source: "rivers",
     layout: {
-      "icon-image": ["get", "labelImg"],
-      "symbol-placement": "point",
-      "icon-allow-overlap": false,
-      "icon-padding": 2,
+      "symbol-placement": "line",
+      "text-field": ["get", "name"],
+      "text-font": ["Open Sans Italic"],
+      "text-size": 11,
+      "text-letter-spacing": 0.08,
+      "symbol-spacing": 500,
+      "text-max-angle": 35,
+      "text-padding": 3,
     },
-    paint: { "icon-opacity": 0.9 },
+    paint: {
+      "text-color": "#1d5b83",
+      "text-halo-color": "rgba(240,247,250,0.9)",
+      "text-halo-width": 1.4,
+      "text-opacity": 0.9,
+    },
   });
 
-  // Lake names — at the polygon centroid.
+  // Lake names — italic blue at the polygon centroid (default point placement).
   map.addLayer({
     id: "lakes-label",
     type: "symbol",
     source: "lakes",
     layout: {
-      "icon-image": ["get", "labelImg"],
-      "icon-allow-overlap": false,
-      "icon-padding": 2,
+      "text-field": ["get", "name"],
+      "text-font": ["Open Sans Italic"],
+      "text-size": ["interpolate", ["linear"], ["zoom"], 0, 10, 6, 13],
+      "text-allow-overlap": false,
+      "text-padding": 2,
     },
-    paint: { "icon-opacity": 0.9 },
+    paint: {
+      "text-color": "#1d5b83",
+      "text-halo-color": "rgba(240,247,250,0.9)",
+      "text-halo-width": 1.4,
+      "text-opacity": 0.9,
+    },
   });
 
   // Style switches are an INSTANT snap (no cross-fade): zero out the paint
@@ -441,10 +460,10 @@ function addFeatureLayers() {
     ["coast-line", "line-color-transition"], ["coast-line", "line-opacity-transition"],
     ["rivers-line", "line-color-transition"], ["rivers-line", "line-opacity-transition"],
     ["cities-symbol", "icon-opacity-transition"],
-    ["country-label", "icon-opacity-transition"],
-    ["cities-label", "icon-opacity-transition"],
-    ["rivers-label", "icon-opacity-transition"],
-    ["lakes-label", "icon-opacity-transition"],
+    ["country-label", "text-opacity-transition"],
+    ["cities-label", "text-opacity-transition"],
+    ["rivers-label", "text-opacity-transition"],
+    ["lakes-label", "text-opacity-transition"],
     ["bg", "background-color-transition"],
   ]) {
     try { map.setPaintProperty(layer, prop, snap); } catch { /* ignore */ }
