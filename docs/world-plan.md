@@ -237,7 +237,7 @@ river confluences).
 
 ---
 
-## Phase 8 — Bake + persistence (save/export)
+## Phase 8 — Bake + persistence (save/export) ✅ SHIPPED
 
 **Why now:** Now there's a full world worth freezing. Unlocks shareable/deployable
 worlds and is the substrate manual edits (Phase 10) attach to.
@@ -250,6 +250,31 @@ worlds and is the substrate manual edits (Phase 10) attach to.
   (coast/countries/lakes/rivers/cities, with properties) + **baked terrain raster
   tiles** (hybrid bake — snapshot the live shader to static tiles).
 - A baked world loads as **pure static MapLibre sources** with no generator/worker.
+
+**Shipped notes:**
+- `src/world/persist.js` owns the dull plumbing: an **IndexedDB** store (`inversia`
+  / `state` / `working`) autosaves `{ recipe, view:{ style, layerVisibility } }`
+  (debounced) on every recipe/style/toggle change, plus tiny `downloadFile` /
+  `pickFile` helpers. On load a **shared link wins** (any `group.key` in the hash →
+  use it); otherwise the last autosave is restored, so a plain reload never loses an
+  unshared world. The state object (not just the recipe) is stored so Phase 10's
+  `overrides` key drops in without a migration.
+- `src/world/bake.js` does the **hybrid terrain bake**: it runs the *same* shared
+  `FRAG` shader (src/terrain.js) over streamed Terrarium tiles in an **offscreen
+  WebGL2** context, reads pixels back (flipped to north-up), and PNG-encodes a small
+  raster pyramid (**z0..z3**, 85 tiles — enough for globe→regional, small enough to
+  bake in seconds). `assembleBundle` packs recipe + the live GeoJSON on screen +
+  view prefs + the baked pyramid into one JSON file.
+- **Loading a bundle freezes the running map** (`enterBakedMode`): the worker is
+  `terminate()`d, the live terrain custom layer is swapped for a `raster` source fed
+  by a `maplibregl.addProtocol("baked", …)` loader over the bundled PNG data-URLs,
+  and every feature source is `setData`'d straight from the bundle. All regen paths
+  guard on a `baked` flag, so nothing recomputes; a reload (which drops baked mode)
+  returns to the live, editable world.
+- UI: a **"Save / Export"** folder in the recipe panel (Download recipe / Load recipe
+  or world… / Download world) plus a transient **toast** for bake progress and
+  confirmations. One picker handles both recipe JSON and world bundles (auto-detected
+  via `format: "inversia-world"`).
 
 **Out of scope:** names (can bake later), editing.
 

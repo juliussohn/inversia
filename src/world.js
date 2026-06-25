@@ -19,14 +19,17 @@ import maplibregl from "maplibre-gl";
 import "maplibre-gl/dist/maplibre-gl.css";
 import "./world.css";
 
-import { decodeHash, encodeHash } from "./world/recipe.js";
+import { decodeHash, encodeHash, eachField, fromJSON, toJSON } from "./world/recipe.js";
 import { createPanel } from "./world/panel.js";
 import { createTerrainLayer } from "./world/terrain-layer.js";
 import {
   STYLE_PRESETS, DEFAULT_STYLE, applyStyle, readStyleId, persistStyle,
   createStylePicker, normalizeStyle,
+  readLayerVisibility, persistLayerVisibility,
 } from "./world/styles.js";
 import { loadWorldStat, landFraction } from "./terrain.js";
+import { loadState, saveState, downloadFile, pickFile } from "./world/persist.js";
+import { bakeTerrain, assembleBundle, isBundle, bakedProtocolLoader, BUNDLE_FORMAT } from "./world/bake.js";
 
 // ---- recipe (single source of truth) ------------------------------------
 // Seed it straight from the URL hash so a shared link restores the same world.
@@ -36,6 +39,12 @@ const recipe = decodeHash(location.hash);
 // Resolved from the URL first (shared links pin world + style), then the last
 // local choice. It rides alongside the world in the hash and survives reseeds.
 let currentStyle = readStyleId(location.hash);
+
+// ---- per-layer visibility (also a VIEW preference) ----------------------
+// User show/hide toggles layered on top of the active style. Persisted in
+// localStorage, kept out of the world hash. Composes with the style switcher:
+// every applyStyle pass honours these overrides.
+const layerVisibility = readLayerVisibility();
 
 // ---- base style ----------------------------------------------------------
 // A minimal valid style under globe projection: just a solid background sphere
@@ -107,6 +116,14 @@ function applyRecipeToMap() {
 const worker = new Worker(new URL("./world/worker.js", import.meta.url), { type: "module" });
 const emptyFC = () => ({ type: "FeatureCollection", features: [] });
 
+// Phase 8: once a baked bundle is loaded the world is frozen — the worker is gone
+// and the static sources own the geometry, so every regen path becomes a no-op.
+let baked = false;
+// The most recent feature payload from the worker, kept so "Download world" can
+// bundle the exact GeoJSON on screen without re-asking the worker.
+let lastFeatures = null;
+const featureWaiters = []; // resolvers awaiting the first/next generation
+
 let featTimer = 0;
 let featReqId = 0;       // newest request issued
 let featAckId = 0;       // newest response applied (drop anything older / stale)
@@ -128,6 +145,7 @@ function featureSig() {
 }
 
 function requestFeatures() {
+  if (baked) return;              // frozen world — the worker is gone
   const sig = featureSig();
   if (sig === lastSig) return;
   lastSig = sig;
@@ -169,7 +187,23 @@ worker.onmessage = (e) => {
   map.getSource("rivers")?.setData(msg.rivers);
   if (msg.countries) map.getSource("countries")?.setData(msg.countries);
   if (msg.cities) map.getSource("cities")?.setData(msg.cities);
+
+  // Keep the live GeoJSON around so a bundle can freeze exactly what's on screen,
+  // and release anyone awaiting the first generation (e.g. an early bake click).
+  lastFeatures = {
+    coast: msg.coast, land: msg.land, lakes: msg.lakes,
+    rivers: msg.rivers, countries: msg.countries, cities: msg.cities,
+  };
+  while (featureWaiters.length) featureWaiters.shift()(lastFeatures);
 };
+
+// Resolve with the current feature payload, awaiting the first generation if it
+// hasn't landed yet. Used by the bundle export so it never ships empty layers.
+function ensureFeatures() {
+  if (lastFeatures) return Promise.resolve(lastFeatures);
+  requestFeatures();
+  return new Promise((resolve) => featureWaiters.push(resolve));
+}
 
 // Coast stroke + lake fill, styled to read as one world. The terrain shader
 // already paints below-water areas as sea, so the lake fill is a distinct,
@@ -355,22 +389,176 @@ function syncHash() {
 // world; it only re-presents it, persists the choice, and refreshes the link.
 function setMapStyle(id) {
   currentStyle = normalizeStyle(id);
-  applyStyle(map, terrain.id, currentStyle);
+  applyStyle(map, terrain.id, currentStyle, layerVisibility);
   applyBackground();
   persistStyle(currentStyle);
   picker.setActive(currentStyle);
   syncHash();
+  scheduleAutosave();
+}
+
+// Re-present the world under the current style with the new layer toggles, and
+// remember the choice. Never touches the recipe or the world geometry.
+function setLayerVisibility(vis) {
+  applyStyle(map, terrain.id, currentStyle, vis);
+  persistLayerVisibility(vis);
+  scheduleAutosave();
+}
+
+// ---- autosave (IndexedDB) ------------------------------------------------
+// Snapshot the working state — recipe + view preferences — so a plain reload
+// restores exactly what was on screen even without the URL hash. Debounced in
+// persist.js; we pass a fresh object each time so it's a stable snapshot.
+function scheduleAutosave() {
+  saveState({
+    recipe: JSON.parse(JSON.stringify(recipe)),
+    view: { style: currentStyle, layerVisibility },
+  });
 }
 
 // ---- auto-generated control panel ----------------------------------------
-createPanel({
+const panel = createPanel({
   container: document.getElementById("panel"),
   recipe,
   onChange: () => {
     applyRecipeToMap();
     syncHash();
+    scheduleAutosave();
   },
+  view: { visibility: layerVisibility, onChange: setLayerVisibility },
 });
+
+// ---- save / export (Phase 8) ---------------------------------------------
+// Bolted onto the recipe pane as a plain folder of buttons: recipe JSON in/out,
+// and the self-contained "Download world" bundle (recipe + GeoJSON + baked terrain).
+const io = panel.pane.addFolder({ title: "Save / Export", expanded: false });
+io.addButton({ title: "Download recipe (.json)" }).on("click", downloadRecipe);
+io.addButton({ title: "Load recipe / world…" }).on("click", loadFromFile);
+io.addButton({ title: "Download world (bake)" }).on("click", downloadWorld);
+
+// Copy a loaded recipe INTO the live object in place (every module holds the same
+// reference). We launder through fromJSON so an old/hand-edited file can't smuggle
+// in out-of-range or wrong-typed values.
+function assignRecipe(src) {
+  const clean = fromJSON(src);
+  for (const { group, key } of eachField()) (recipe[group] ??= {})[key] = clean[group][key];
+}
+
+// Download just the recipe — the small, shareable save format (also the URL hash).
+function downloadRecipe() {
+  downloadFile(`inversia-recipe-${recipe.seed.seed}.json`, toJSON(recipe));
+  toast("Recipe downloaded ✓");
+}
+
+// One picker for both: a full world bundle switches into baked (frozen) mode; any
+// other JSON is treated as a recipe and applied live.
+async function loadFromFile() {
+  const file = await pickFile();
+  if (!file) return;
+  let parsed;
+  try { parsed = JSON.parse(await file.text()); }
+  catch { toast("Not a valid JSON file"); return; }
+
+  if (isBundle(parsed)) { enterBakedMode(parsed); return; }
+
+  assignRecipe(parsed);
+  panel.refresh();
+  applyRecipeToMap();
+  syncHash();
+  scheduleAutosave();
+  toast("Recipe loaded ✓");
+}
+
+// "Download world": freeze the live world into a self-contained bundle — the
+// recipe, the exact GeoJSON on screen, the view preferences, and a baked terrain
+// raster pyramid (the live shader snapshotted to static tiles). Reloads with no
+// worker. The terrain bake is the slow part, so we narrate progress via the toast.
+async function downloadWorld() {
+  if (baked) { toast("This is already a baked world"); return; }
+  toast("Baking terrain…", 0);
+  try {
+    const layers = await ensureFeatures();
+    const terrainBundle = await bakeTerrain(recipe, {
+      onProgress: (done, total) => toast(`Baking terrain… ${done}/${total} tiles`, 0),
+    });
+    const bundle = assembleBundle({
+      recipe: fromJSON(recipe),                 // clean deep copy
+      view: { style: currentStyle, layerVisibility },
+      layers,
+      terrain: terrainBundle,
+      savedAt: new Date().toISOString(),
+    });
+    downloadFile(`inversia-world-${recipe.seed.seed}.json`, JSON.stringify(bundle));
+    toast("World downloaded ✓");
+  } catch (err) {
+    console.error("[bake] failed:", err);
+    toast("Bake failed — see console");
+  }
+}
+
+// Switch the running map into a frozen, static world: terminate the worker, swap
+// the live terrain custom layer for a baked raster source, and fill every feature
+// source straight from the bundle. No generation runs after this — a reload (which
+// drops baked mode) returns to the live, editable world.
+let bakedRegistered = false;
+function enterBakedMode(bundle) {
+  baked = true;
+  worker.terminate();
+
+  // recipe + view from the bundle, for display and an accurate URL/link.
+  assignRecipe(bundle.recipe || {});
+  panel.refresh();
+
+  // terrain: drop the custom shader layer, serve the baked PNG pyramid as raster.
+  if (map.getLayer(terrain.id)) map.removeLayer(terrain.id);
+  if (bakedRegistered) maplibregl.removeProtocol("baked");
+  maplibregl.addProtocol("baked", bakedProtocolLoader(bundle.terrain.tiles));
+  bakedRegistered = true;
+  if (map.getLayer("baked-terrain")) map.removeLayer("baked-terrain");
+  if (map.getSource("baked-terrain")) map.removeSource("baked-terrain");
+  map.addSource("baked-terrain", {
+    type: "raster",
+    tiles: ["baked://{z}/{x}/{y}"],
+    tileSize: bundle.terrain.tileSize || 256,
+    minzoom: bundle.terrain.minzoom ?? 0,
+    maxzoom: bundle.terrain.maxzoom ?? 3,
+  });
+  map.addLayer(
+    { id: "baked-terrain", type: "raster", source: "baked-terrain", paint: { "raster-fade-duration": 0 } },
+    "land-fill",                                // keep it beneath the vector layers
+  );
+
+  // static features straight from the bundle — no worker round-trip.
+  for (const id of ["coast", "land", "countries", "lakes", "rivers", "cities"]) {
+    map.getSource(id)?.setData(bundle.layers[id] || emptyFC());
+  }
+
+  // honour the saved view preference (style + toggles), then re-present.
+  if (bundle.view?.layerVisibility) Object.assign(layerVisibility, bundle.view.layerVisibility);
+  if (bundle.view?.style) currentStyle = normalizeStyle(bundle.view.style);
+  applyStyle(map, terrain.id, currentStyle, layerVisibility);
+  applyBackground();
+  picker.setActive(currentStyle);
+  syncHash();
+  toast("Baked world loaded — generator stopped. Reload to edit live.", 4000);
+}
+
+// ---- transient toast -----------------------------------------------------
+// Lightweight status line for the export/import flow (bake progress, confirmations).
+// ms = 0 keeps it sticky until the next toast replaces it.
+let toastEl = null;
+let toastTimer = 0;
+function toast(msg, ms = 2400) {
+  if (!toastEl) {
+    toastEl = document.createElement("div");
+    toastEl.id = "toast";
+    document.body.appendChild(toastEl);
+  }
+  toastEl.textContent = msg;
+  toastEl.classList.add("show");
+  clearTimeout(toastTimer);
+  if (ms) toastTimer = setTimeout(() => toastEl.classList.remove("show"), ms);
+}
 
 // ---- map-style picker ----------------------------------------------------
 // A small segmented control (Relief / Political / Minimal). It reflects the
@@ -402,12 +590,35 @@ map.on("load", () => {
   applyRecipeToMap();
   map.addLayer(terrain);  // above the placeholder background
   addFeatureLayers();     // land + coast + lakes + rivers sit on top of the terrain
-  applyStyle(map, terrain.id, currentStyle); // present in the resolved style from the start
+  applyStyle(map, terrain.id, currentStyle, layerVisibility); // resolved style + toggles from the start
   applyBackground();
   requestFeatures();      // first generation (bypasses the settle debounce)
 });
 loadWorldStat().then(refreshStats);
 syncHash();
+
+// ---- autosave restore ----------------------------------------------------
+// A shared link (recipe in the hash) always wins; otherwise restore the last
+// autosaved working state so a plain reload never loses an unshared world.
+function hashHasRecipe() {
+  const p = new URLSearchParams(location.hash.replace(/^#/, ""));
+  for (const { group, key } of eachField()) if (p.has(`${group}.${key}`)) return true;
+  return false;
+}
+if (!hashHasRecipe()) {
+  loadState().then((saved) => {
+    if (baked || !saved?.recipe || hashHasRecipe()) return;
+    assignRecipe(saved.recipe);
+    if (saved.view?.layerVisibility) {
+      Object.assign(layerVisibility, saved.view.layerVisibility);
+      setLayerVisibility(layerVisibility);
+    }
+    if (saved.view?.style) setMapStyle(saved.view.style);
+    panel.refresh();
+    applyRecipeToMap();
+    syncHash();
+  });
+}
 
 // expose for quick console poking during development
 if (import.meta.env?.DEV) Object.assign(window, { map, recipe });
