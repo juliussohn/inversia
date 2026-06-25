@@ -26,6 +26,33 @@
 
 export const DEFAULT_STYLE = "relief";
 const STORAGE_KEY = "inversia.style";
+const VIS_STORAGE_KEY = "inversia.layers";
+
+// ---- per-layer visibility toggles (a VIEW preference) --------------------
+// A simple on/off override the user drives from the panel, on top of whatever
+// the active style preset wants. Each toggle owns one or more MapLibre layers
+// (or the terrain custom layer). A toggle that's OFF force-hides its layers no
+// matter what the style says; ON defers to the preset's own visibility. Like the
+// style choice this is NOT part of the world recipe — it persists in localStorage
+// but stays out of the world hash so a shared link's geometry is unaffected.
+export const LAYER_TOGGLES = [
+  { key: "terrain", label: "Terrain", terrain: true },
+  { key: "land", label: "Land fill", layers: ["land-fill"] },
+  { key: "borders", label: "Borders", layers: ["country-border"] },
+  { key: "coast", label: "Coastline", layers: ["coast-line"] },
+  { key: "rivers", label: "Rivers", layers: ["rivers-line"] },
+  { key: "lakes", label: "Lakes", layers: ["lakes-fill", "lakes-line"] },
+  { key: "cities", label: "Cities", layers: ["cities-symbol"] },
+];
+
+// layerId → toggle key, so applyStyle can look up a layer's owning toggle.
+const LAYER_TO_TOGGLE = new Map();
+for (const t of LAYER_TOGGLES) for (const id of t.layers ?? []) LAYER_TO_TOGGLE.set(id, t.key);
+
+/** A fresh visibility object with every toggle on. */
+export function defaultLayerVisibility() {
+  return Object.fromEntries(LAYER_TOGGLES.map((t) => [t.key, true]));
+}
 
 // Each preset is a plain bundle: an optional flat `ocean` colour (the background
 // layer, which is the whole sea once the terrain is hidden), the terrain custom
@@ -132,16 +159,24 @@ function setVisible(map, layerId, visible) {
  * layer. The background (ocean) is owned by the caller so it can blend the
  * recipe-derived backdrop in `relief`; see STYLE_PRESETS[id].ocean.
  *
+ * The optional `visibility` map (toggle key → boolean) is the user's per-layer
+ * override: a toggle that's OFF force-hides its layers regardless of the preset,
+ * while ON defers to the preset's own visibility. Omit it to apply the preset
+ * unmodified.
+ *
  * @param {import("maplibre-gl").Map} map
  * @param {string} terrainId  id of the terrain custom layer
  * @param {string} styleId
+ * @param {Record<string, boolean>} [visibility]  per-toggle on/off overrides
  */
-export function applyStyle(map, terrainId, styleId) {
+export function applyStyle(map, terrainId, styleId, visibility) {
+  const on = (key) => visibility?.[key] !== false; // default ON when unset
   const preset = STYLE_PRESETS[normalizeStyle(styleId)];
-  setVisible(map, terrainId, preset.terrain.visible);
+  setVisible(map, terrainId, preset.terrain.visible && on("terrain"));
   for (const [layerId, spec] of Object.entries(preset.layers)) {
     if (!map.getLayer(layerId)) continue;
-    setVisible(map, layerId, spec.visibility !== "none");
+    const toggle = LAYER_TO_TOGGLE.get(layerId);
+    setVisible(map, layerId, spec.visibility !== "none" && (!toggle || on(toggle)));
     if (spec.paint) {
       for (const [prop, value] of Object.entries(spec.paint)) {
         try { map.setPaintProperty(layerId, prop, value); } catch { /* ignore */ }
@@ -168,6 +203,20 @@ export function readStyleId(hash = location.hash) {
 
 export function persistStyle(id) {
   try { localStorage.setItem(STORAGE_KEY, normalizeStyle(id)); } catch { /* ignore */ }
+}
+
+/** Read the saved layer-visibility overrides, defaulting any missing toggle to on. */
+export function readLayerVisibility() {
+  const vis = defaultLayerVisibility();
+  try {
+    const stored = JSON.parse(localStorage.getItem(VIS_STORAGE_KEY) || "{}");
+    for (const t of LAYER_TOGGLES) if (typeof stored[t.key] === "boolean") vis[t.key] = stored[t.key];
+  } catch { /* storage blocked / malformed */ }
+  return vis;
+}
+
+export function persistLayerVisibility(vis) {
+  try { localStorage.setItem(VIS_STORAGE_KEY, JSON.stringify(vis)); } catch { /* ignore */ }
 }
 
 /**
